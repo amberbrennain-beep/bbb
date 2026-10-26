@@ -1,0 +1,23 @@
+From 1f79e935345133563509d2099240e8ef3ec9bb6c Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Sun, 18 Oct 2026 13:21:06 +0300
+Subject: [PATCH 23/39] license
+
+(cherry picked from commit f86b6f0304509e5b36f1c591a5fed612ef063b76)
+---
+ src/frontend_common/content_manager.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/frontend_common/content_manager.h b/src/frontend_common/content_manager.h
+index d7b76fc3a..6d79098ef 100644
+--- a/src/frontend_common/content_manager.h
++++ b/src/frontend_common/content_manager.h
+@@ -1,4 +1,4 @@
+-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ // SPDX-FileCopyrightText: 2024 yuzu Emulator Project
+-- 
+2.43.0
+

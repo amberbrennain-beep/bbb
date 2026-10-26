@@ -1,0 +1,98 @@
+From a044c4c95a0d21823731f70f25c7638baac813ec Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 26 Oct 2026 11:02:00 +0000
+Subject: [PATCH 37/39] [android] Add Galaxy S26 flavor and build preset
+
+Common ISA subset of Snapdragon 8 Elite Gen 5 and Exynos 2600 (ARMv8.6-A +
+FP16/AES/SHA2, no SVE), ThinLTO, separate application ID so it installs
+next to the standard build.
+---
+ .ci/android/build.sh             |  3 ++-
+ CMakeLists.txt                   |  6 +++++-
+ src/android/app/build.gradle.kts | 25 +++++++++++++++++++++++++
+ 3 files changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/.ci/android/build.sh b/.ci/android/build.sh
+index b76fb80bd..dbb9fc306 100755
+--- a/.ci/android/build.sh
++++ b/.ci/android/build.sh
+@@ -24,7 +24,7 @@ Options:
+     -r, --release        	Enable update checker. If set, sets the DEVEL bool variable to false.
+                          	By default, DEVEL is true.
+     -t, --target <FLAVOR> 	Build flavor (variable: TARGET)
+-                          	Valid values are: legacy, optimized, standard, chromeos
++                          	Valid values are: legacy, optimized, standard, chromeos, s26
+                           	Default: standard
+     -b, --build-type <TYPE>	Build type (variable: TYPE)
+                           	Valid values are: Release, RelWithDebInfo, Debug
+@@ -81,6 +81,7 @@ case "$TARGET_LOWER" in
+ 	optimized) FLAVOR=GenshinSpoof ;;
+ 	standard) FLAVOR=Mainline ;;
+     chromeos) FLAVOR=ChromeOS ;;
++	s26) FLAVOR=GalaxyS26 ;;
+ 	*) die "Invalid build flavor $TARGET."
+ esac
+ 
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f647204a4..3b30c9886 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -343,7 +343,7 @@ if (CXX_GCC OR CXX_CLANG)
+         endif()
+     elseif(ARCHITECTURE_arm64)
+         # See https://gcc.gnu.org/onlinedocs/gcc/AArch64-Options.html
+-        set(YUZU_BUILD_PRESET "custom" CACHE STRING "Build preset to use. One of: custom, generic, optimized, armv9, native")
++        set(YUZU_BUILD_PRESET "custom" CACHE STRING "Build preset to use. One of: custom, generic, optimized, armv9, s26, native")
+         set(mtune generic)
+         if (${YUZU_BUILD_PRESET} STREQUAL "generic")
+             set(march armv8-a)
+@@ -351,6 +351,10 @@ if (CXX_GCC OR CXX_CLANG)
+             set(march armv8.2-a+lse+rcpc)
+         elseif (${YUZU_BUILD_PRESET} STREQUAL "armv9")
+             set(march armv9-a)
++        elseif (${YUZU_BUILD_PRESET} STREQUAL "s26")
++            # Galaxy S26: common subset of Snapdragon 8 Elite Gen 5 (Oryon) and Exynos 2600 (C1).
++            # No SVE, Oryon does not implement it.
++            set(march armv8.6-a+fp16+aes+sha2)
+         endif()
+     endif()
+ 
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index 69dd6a8e4..85a736daf 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -216,6 +216,31 @@ android {
+             }
+         }
+ 
++        // Tuned for the Galaxy S26 family (Snapdragon 8 Elite Gen 5 / Exynos 2600)
++        create("galaxyS26") {
++            dimension = "version"
++            minSdk = 35
++            manifestPlaceholders += mapOf("appNameBase" to "Eden S26")
++            resValue("string", "app_name_suffixed", "Eden S26")
++            applicationId = "dev.eden.eden_emulator.s26"
++
++            externalNativeBuild {
++                cmake {
++                    arguments.addAll(
++                        listOf(
++                            "-DYUZU_BUILD_PRESET=s26",
++                            "-DENABLE_LTO=ON",
++                            "-DYUZU_DOWNLOAD_ANDROID_VVL=OFF"
++                        )
++                    )
++                }
++            }
++
++            ndk {
++                abiFilters += listOf("arm64-v8a")
++            }
++        }
++
+         create("legacy") {
+             dimension = "version"
+             minSdk = 29
+-- 
+2.43.0
+

@@ -1,0 +1,26 @@
+From 9e9d13c638de8da57d7ff6a137e16f89b279f1ea Mon Sep 17 00:00:00 2001
+From: wildcard <wildcard@eden-emu.dev>
+Date: Mon, 11 May 2026 02:38:01 +0200
+Subject: [PATCH 15/39] Update src/core/loader/nso.cpp
+
+(cherry picked from commit d88f9e00c99acf7c5b4d86c7f48d725f25eb0e27)
+---
+ src/core/loader/nso.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
+index 4188a6d0d..9e4f6116f 100644
+--- a/src/core/loader/nso.cpp
++++ b/src/core/loader/nso.cpp
+@@ -78,7 +78,7 @@ void ApplyPaperMarioTTYDWorkaround(const Kernel::KProcess& process, std::string_
+     }
+ 
+     std::copy(kNop.begin(), kNop.end(), image.begin() + trap_offset);
+-    LOG_WARNING(Loader, "Applied Paper Mario TTYD boot workaround for {:016X} at nnSdk+{:#x}",
++    LOG_WARNING(Loader, "Applied Paper Mario TTYD crash workaround for {:016X} at nnSdk+{:#x}",
+                 process.GetProgramId(), PaperMarioTTYDTrapOffset);
+ }
+ } // Anonymous namespace
+-- 
+2.43.0
+

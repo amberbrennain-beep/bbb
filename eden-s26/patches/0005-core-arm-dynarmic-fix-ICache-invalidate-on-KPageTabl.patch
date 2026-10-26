@@ -1,0 +1,41 @@
+From 91eda698d8e834e794c2251b130643055cd675af Mon Sep 17 00:00:00 2001
+From: lizzie <lizzie@eden-emu.dev>
+Date: Mon, 31 Aug 2026 17:12:45 +0000
+Subject: [PATCH 05/39] [core/arm/dynarmic] fix ICache invalidate on KPageTable
+
+Signed-off-by: lizzie <lizzie@eden-emu.dev>
+(cherry picked from commit b2fd37bb262eb501b495083dc9e9121f38603efe)
+---
+ src/core/arm/dynarmic/arm_dynarmic_32.cpp | 3 ++-
+ src/core/arm/dynarmic/arm_dynarmic_64.cpp | 1 +
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_32.cpp b/src/core/arm/dynarmic/arm_dynarmic_32.cpp
+index a59aa3cac..ed35daba3 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_32.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_32.cpp
+@@ -416,7 +416,8 @@ void ArmDynarmic32::ClearInstructionCache() {
+ }
+ 
+ void ArmDynarmic32::InvalidateCacheRange(u64 addr, std::size_t size) {
+-    m_jit->InvalidateCacheRange(static_cast<u32>(addr), size);
++    m_cb->last_code_addr = u64(-1);
++    m_jit->InvalidateCacheRange(u32(addr), size);
+ }
+ 
+ } // namespace Core
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 894857a86..b4d18d3f8 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -444,6 +444,7 @@ void ArmDynarmic64::ClearInstructionCache() {
+ }
+ 
+ void ArmDynarmic64::InvalidateCacheRange(u64 addr, std::size_t size) {
++    m_cb->last_code_addr = u64(-1);
+     m_jit->InvalidateCacheRange(addr, size);
+ }
+ 
+-- 
+2.43.0
+

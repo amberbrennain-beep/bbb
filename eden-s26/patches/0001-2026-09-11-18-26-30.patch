@@ -1,0 +1,35 @@
+From b8458bdb4925d1ac0b9cf1580bb69fc06c4aef14 Mon Sep 17 00:00:00 2001
+From: lizzie <lizzie@eden-emu.dev>
+Date: Fri, 11 Sep 2026 18:26:30 +0000
+Subject: [PATCH 01/39] 2026-09-11 18:26:30
+
+Signed-off-by: lizzie <lizzie@eden-emu.dev>
+(cherry picked from commit 5fcfa46ca8c1c23753d52cda68aacd9e2f1ceefa)
+---
+ src/video_core/dma_pusher.h | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
+index 62af62851..c282c0d00 100644
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -109,11 +109,11 @@ inline CommandHeader BuildCommandHeader(BufferMethods method, u32 arg_count, Sub
+ struct CommandList final {
+     CommandList() = default;
+     explicit CommandList(std::size_t size) : command_lists(size) {}
+-    explicit CommandList(boost::container::small_vector<CommandHeader, 512>&& prefetch_command_list_)
+-        : prefetch_command_list{std::move(prefetch_command_list_)} {}
+-
+-    boost::container::small_vector<CommandListHeader, 512> command_lists;
+-    boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
++    explicit CommandList(std::vector<CommandHeader>&& prefetch_command_list_)
++        : prefetch_command_list{std::move(prefetch_command_list_)}
++    {}
++    std::vector<CommandListHeader> command_lists;
++    std::vector<CommandHeader> prefetch_command_list;
+ };
+ 
+ /// @brief The DmaPusher class implements DMA submission to FIFOs, providing an area of memory that the
+-- 
+2.43.0
+

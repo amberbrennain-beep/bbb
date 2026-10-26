@@ -1,0 +1,34 @@
+From 0ba72ddb45f9f0e6a77dacd8fa7a717d6fab1278 Mon Sep 17 00:00:00 2001
+From: mleo2003 <mleo2003@gmail.com>
+Date: Tue, 20 Oct 2026 21:49:05 -0700
+Subject: [PATCH 09/39] [android] Don't treat an activity recreation as a ROM
+ swap
+
+A recreated EmulationActivity still has its launch intent; with a session
+running, onCreate took the swap path and blocked in stopEmulation() on the
+main thread.
+
+Assisted-by: Claude Opus 5.5 (debugging, patch drafting)
+Signed-off-by: mleo2003 <mleo2003@gmail.com>
+(cherry picked from commit 730a7059b4a5aa6c5d8cc907b023163184278732)
+---
+ .../java/org/yuzu/yuzu_emu/activities/EmulationActivity.kt     | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/activities/EmulationActivity.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/activities/EmulationActivity.kt
+index aaabcc95b..bcf14d66c 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/activities/EmulationActivity.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/activities/EmulationActivity.kt
+@@ -158,7 +158,8 @@ class EmulationActivity : AppCompatActivity(), SensorEventListener, InputManager
+         setContentView(binding.root)
+ 
+         val launchIntent = Intent(intent)
+-        val shouldDeferLaunchForSwap = hasEmulationSession && isSwapIntent(launchIntent)
++        val shouldDeferLaunchForSwap =
++            savedInstanceState == null && hasEmulationSession && isSwapIntent(launchIntent)
+         if (shouldDeferLaunchForSwap) {
+             Log.info("[EmulationActivity] onCreate detected existing session; deferring new game setup for swap")
+             emulationViewModel.setIsEmulationStopping(true)
+-- 
+2.43.0
+

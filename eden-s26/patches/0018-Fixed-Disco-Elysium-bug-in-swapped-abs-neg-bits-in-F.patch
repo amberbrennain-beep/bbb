@@ -1,0 +1,30 @@
+From fcbe3fda26954f67b156e18265602c6071c1c7ca Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Wed, 21 Oct 2026 23:57:13 +0300
+Subject: [PATCH 18/39] Fixed Disco Elysium - bug in swapped abs/neg bits in
+ F2I decoding
+
+(cherry picked from commit 98fe077f916e38194932059459dfa950f6ee336c)
+---
+ .../translate/impl/floating_point_conversion_integer.cpp      | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/floating_point_conversion_integer.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/floating_point_conversion_integer.cpp
+index c8c9e2624..bd9964baf 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate/impl/floating_point_conversion_integer.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/floating_point_conversion_integer.cpp
+@@ -41,9 +41,9 @@ union F2I {
+     BitField<39, 2, Rounding> rounding;
+     BitField<41, 1, u64> half;
+     BitField<44, 1, u64> ftz;
+-    BitField<45, 1, u64> abs;
++    BitField<45, 1, u64> neg;
+     BitField<47, 1, u64> cc;
+-    BitField<49, 1, u64> neg;
++    BitField<49, 1, u64> abs;
+ };
+ 
+ size_t BitSize(DestFormat dest_format) {
+-- 
+2.43.0
+

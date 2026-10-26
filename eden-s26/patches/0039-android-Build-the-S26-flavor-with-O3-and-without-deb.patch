@@ -1,0 +1,33 @@
+From 9d415eeed3c63f28ccb68d8377d38e198cbcd3fe Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 26 Oct 2026 11:02:01 +0000
+Subject: [PATCH 39/39] [android] Build the S26 flavor with -O3 and without
+ debug info
+
+---
+ src/android/app/build.gradle.kts | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index 85a736daf..38a0e0d67 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -226,11 +226,14 @@ android {
+ 
+             externalNativeBuild {
+                 cmake {
++                    // AGP builds release as RelWithDebInfo (-O2 -g), use -O3 instead
+                     arguments.addAll(
+                         listOf(
+                             "-DYUZU_BUILD_PRESET=s26",
+                             "-DENABLE_LTO=ON",
+-                            "-DYUZU_DOWNLOAD_ANDROID_VVL=OFF"
++                            "-DYUZU_DOWNLOAD_ANDROID_VVL=OFF",
++                            "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O3 -DNDEBUG",
++                            "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O3 -DNDEBUG"
+                         )
+                     )
+                 }
+-- 
+2.43.0
+

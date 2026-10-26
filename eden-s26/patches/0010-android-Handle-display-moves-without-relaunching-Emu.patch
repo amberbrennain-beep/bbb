@@ -1,0 +1,32 @@
+From dba269740071c4e35637d10ee009624de369188b Mon Sep 17 00:00:00 2001
+From: mleo2003 <mleo2003@gmail.com>
+Date: Tue, 20 Oct 2026 21:49:05 -0700
+Subject: [PATCH 10/39] [android] Handle display moves without relaunching
+ EmulationActivity
+
+Unplugging an external display moves the task to the built-in screen,
+changing density, touchscreen and colorMode, which weren't in configChanges.
+
+Assisted-by: Claude Opus 5.5 (debugging, patch drafting)
+Signed-off-by: mleo2003 <mleo2003@gmail.com>
+(cherry picked from commit 3a6720ae84d5458f1b97279d5d5d1cecffb8326e)
+---
+ src/android/app/src/main/AndroidManifest.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/android/app/src/main/AndroidManifest.xml b/src/android/app/src/main/AndroidManifest.xml
+index b899ca07f..18a0afbf9 100644
+--- a/src/android/app/src/main/AndroidManifest.xml
++++ b/src/android/app/src/main/AndroidManifest.xml
+@@ -83,7 +83,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
+             android:theme="@style/Theme.Yuzu.Main"
+             android:launchMode="singleTop"
+             android:supportsPictureInPicture="true"
+-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
++            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|density|touchscreen|colorMode|keyboard|keyboardHidden|navigation"
+             android:exported="true">
+             <intent-filter>
+                 <action android:name="android.nfc.action.TECH_DISCOVERED" />
+-- 
+2.43.0
+
