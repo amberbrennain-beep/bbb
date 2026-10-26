@@ -32,8 +32,8 @@ default NDK (r27, clang 18). Desktop RPCS3 ships `-O3` with LTO. This build uses
   *call* into the outline-atomics helpers (`bl __aarch64_ldadd4_acq_rel`); at v8.6 it is one inline LSE
   instruction. RPCS3 leans on atomics everywhere (reservations, locks, wait queues). It also lets the compiler
   use RCPC (cheaper acquire loads), LSE2 (single-instruction 128-bit atomic loads/stores) and the v8.6 SIMD
-  extensions.
-  SVE, SME and MOPS are left out on purpose: whether the kernel enables them differs between the two variants.
+  extensions. SVE, SME and MOPS stay out of the static code on purpose: they only work if the kernel enables
+  them, and that (like SVE support itself) is not the same on both variants. The JIT uses them when present.
 - ThinLTO on the emulator core and the final `libe.so`, as desktop RPCS3 does.
 - NDK r30 (clang 21) instead of r27 (clang 18): newer codegen and it knows the Oryon and Cortex-X925 models.
 - Upstream also re-added `-march=armv8-a` inside RPCS3's own CMake, later on the command line, which would
@@ -57,7 +57,8 @@ Adreno/Xclipse driver compiles every pipeline from scratch on every boot of a ga
 saved to the game's cache folder (`vk_pipeline_cache.bin`): after the startup shader-cache load and on exit
 (the early save matters because Android usually kills the process rather than letting it shut down). Data
 written by another GPU or driver, e.g. after switching to a Turnip driver, is detected and discarded.
-Second and later launches of a game get through shader loading much faster and stutter less.
+Second and later launches of a game should get through shader loading much faster and stutter less (the fork
+reported warm relaunches skipping the cold recompile on an Adreno 650 with Turnip).
 
 This also fixes a latent bug: the cache calls went to the system Vulkan loader instead of the active driver,
 which bypasses a custom (adrenotools/Turnip) driver.
@@ -73,8 +74,8 @@ five features. On the S26 that is off in both directions:
   fallback), which under-reports the core.
 
 The JIT now reads the kernel's HWCAP bits and enables exactly LSE/LSE2/LSE128, RCPC/RCPC-immo/RCPC3, CRC, AES,
-SHA2, FP16, FHM, BF16, JSCVT, FCMA, FlagM/FlagM2, FRINT, MOPS, CSSC and MTE as reported, with SME kept off. Unknown Qualcomm
-parts map to `oryon-1`. The C1 cores were also missing from the app's CPU tables, so the "LLVM CPU" picker offered
+SHA2, FP16, FHM, BF16, JSCVT, FCMA, FlagM/FlagM2, FRINT, MOPS, CSSC and MTE as reported, with SME kept off.
+Unknown Qualcomm parts map to `oryon-1`. The C1 cores were also missing from the app's CPU tables, so the "LLVM CPU" picker offered
 "Unknown", an invalid LLVM CPU that silently drops to generic code.
 
 The chosen target is logged once: look for `LLVM: Target CPU '...' with host features ...` in the log.
