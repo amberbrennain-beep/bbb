@@ -1,7 +1,7 @@
 From 0ba72ddb45f9f0e6a77dacd8fa7a717d6fab1278 Mon Sep 17 00:00:00 2001
 From: mleo2003 <mleo2003@gmail.com>
 Date: Tue, 20 Oct 2026 21:49:05 -0700
-Subject: [PATCH 09/40] [android] Don't treat an activity recreation as a ROM
+Subject: [PATCH 09/46] [android] Don't treat an activity recreation as a ROM
  swap
 
 A recreated EmulationActivity still has its launch intent; with a session

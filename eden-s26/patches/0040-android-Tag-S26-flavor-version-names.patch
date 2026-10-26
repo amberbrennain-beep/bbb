@@ -1,7 +1,7 @@
-From b3593e2f50d6dcb452a2a85328a0b240b7946b8b Mon Sep 17 00:00:00 2001
+From 490c779d383706e6c92a23c4cafba1f633c4ccb6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Mon, 26 Oct 2026 11:49:33 +0000
-Subject: [PATCH] [android] Tag S26 flavor version names
+Date: Mon, 26 Oct 2026 12:55:30 +0000
+Subject: [PATCH 40/46] [android] Tag S26 flavor version names
 
 ---
  src/android/app/build.gradle.kts | 1 +

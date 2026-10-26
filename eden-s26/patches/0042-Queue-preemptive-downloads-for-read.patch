@@ -1,0 +1,83 @@
+From 8c601090b0febb5a612051a52bd4d53a32c1ede1 Mon Sep 17 00:00:00 2001
+From: John <john@eden-emu.dev>
+Date: Sat, 17 Oct 2026 19:12:38 +0200
+Subject: [PATCH 42/46] Queue preemptive downloads for read
+
+(cherry picked from commit 76088a2c5d7fa8c3e35a3e2e87bcdb162c31674f)
+---
+ src/video_core/texture_cache/texture_cache.h  | 23 +++++++++++++++++++
+ .../texture_cache/texture_cache_base.h        |  3 +++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index c3dce1d42..0e1cecb38 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -6,6 +6,7 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
+ #include <limits>
+ #include <optional>
+ #include <bit>
+@@ -213,6 +214,7 @@ typename P::ImageView& TextureCache<P>::GetImageView(u32 index) noexcept {
+ template <class P>
+ void TextureCache<P>::MarkModification(ImageId id) noexcept {
+     MarkModification(slot_images[id]);
++    QueuePreemptiveDownload(id);
+ }
+ 
+ template <class P>
+@@ -2565,6 +2567,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool
+     }
+     if (is_modification) {
+         MarkModification(image);
++        QueuePreemptiveDownload(image_id);
+     }
+     lru_cache.Touch(image.lru_index, frame_tick);
+ }
+@@ -2670,6 +2673,26 @@ void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<Imag
+     }
+ }
+ 
++template <class P>
++void TextureCache<P>::QueuePreemptiveDownload(ImageId image_id) {
++    // Images the CPU has read back (forced_flushed) are downloaded preemptively so later reads see
++    // the GPU result without a synchronous flush. Render targets queue this when they are bound;
++    // images written in any other way (blits, copies, storage writes) have to queue it here or
++    // the CPU keeps reading the contents of its first readback.
++    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++        if (!slot_images[image_id].info.forced_flushed) {
++            return;
++        }
++        const bool is_queued =
++            std::ranges::any_of(uncommitted_downloads, [image_id](const PendingDownload& download) {
++                return download.is_swizzle && download.object_id == image_id;
++            });
++        if (!is_queued) {
++            uncommitted_downloads.emplace_back(PendingDownload{true, 0, image_id});
++        }
++    }
++}
++
+ template <class P>
+ void TextureCache<P>::BindRenderTarget(ImageViewId* old_id, ImageViewId new_id) {
+     if (*old_id == new_id) {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index b42c0189c..9aff70e19 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -397,6 +397,9 @@ private:
+     /// Mark an image as modified from the GPU
+     void MarkModification(ImageBase& image) noexcept;
+ 
++    /// Queue an asynchronous download of an image the CPU reads back after GPU modifications
++    void QueuePreemptiveDownload(ImageId image_id);
++
+     /// Synchronize image aliases, copying data if needed
+     void SynchronizeAliases(ImageId image_id);
+ 
+-- 
+2.43.0
+

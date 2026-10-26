@@ -79,11 +79,11 @@ From a contributor fork, with no PR open:
 
 | | |
 |---|---|
-| File | `Eden-S26-v0.0.4-rc2-1074-s26.apk` (21.0 MB, versus 25.0 MB for official v0.2.1 standard) |
-| SHA-256 | `e9a24fe9b0b4d22b1e50f500488691b89d85a53ca3a4942eaf6b1554dcdb5d74` |
+| File | `Eden-S26-ZA-v0.0.4-rc2-1080-s26.apk` (21.0 MB, versus 25.0 MB for official v0.2.1 standard). Supersedes `Eden-S26-v0.0.4-rc2-1074-s26.apk`. |
+| SHA-256 | `74c83ec152fe1734d090ecc0026db389104725b44f5ddd1835c31823d9690185` |
 | Package / label | `dev.eden.eden_emulator.s26` / "Eden S26", min Android 15, target Android 16 |
 | Signature | Eden's public debug key (APK signature v2). It can't update an official Eden install; it installs alongside it. |
-| Version name | `v0.0.4-rc2-1074-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
+| Version name | `v0.0.4-rc2-1080-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
 
 Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
@@ -96,7 +96,7 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
 ## Install
 
-1. Download `Eden-S26-v0.0.4-rc2-1074-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
+1. Download `Eden-S26-ZA-v0.0.4-rc2-1080-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
 2. Launch **Eden S26**, then add your `prod.keys`, firmware and games folder (same steps as official Eden).
 3. Recommended:
    - **Snapdragon S26:** use the system driver. If a Mesa Turnip build with Adreno 8xx support is available, load it from Eden's GPU driver manager and compare.

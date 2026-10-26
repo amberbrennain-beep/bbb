@@ -1,7 +1,7 @@
 From 9f774b8b047fae15e49b5f2cb8765c62b0a18f20 Mon Sep 17 00:00:00 2001
 From: wildcard <wildcard@eden-emu.dev>
 Date: Mon, 11 May 2026 02:34:57 +0200
-Subject: [PATCH 14/40] Fix Paper Mario TTYD crashes on Android
+Subject: [PATCH 14/46] Fix Paper Mario TTYD crashes on Android
 
 This fixes the crash in Paper Mario TTYD on Android. The issue was a 32bit svc was being executed at module_start + 0x112F50 so we replace that svc we nop to fix the crash issue.
 
