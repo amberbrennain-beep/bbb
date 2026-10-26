@@ -1,7 +1,7 @@
 From d5b4194a16b1af8e391d8d7727d7aad06215ee1e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 26 Oct 2026 11:02:01 +0000
-Subject: [PATCH 38/39] [nce] fix build of split page invalidation
+Subject: [PATCH 38/40] [nce] fix build of split page invalidation
 
 ---
  src/core/arm/nce/arm_nce.cpp | 5 ++---

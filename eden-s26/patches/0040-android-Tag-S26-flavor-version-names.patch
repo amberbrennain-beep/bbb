@@ -1,0 +1,24 @@
+From b3593e2f50d6dcb452a2a85328a0b240b7946b8b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 26 Oct 2026 11:49:33 +0000
+Subject: [PATCH] [android] Tag S26 flavor version names
+
+---
+ src/android/app/build.gradle.kts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index 38a0e0d67..643158fc5 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -223,6 +223,7 @@ android {
+             manifestPlaceholders += mapOf("appNameBase" to "Eden S26")
+             resValue("string", "app_name_suffixed", "Eden S26")
+             applicationId = "dev.eden.eden_emulator.s26"
++            versionNameSuffix = "-s26"
+ 
+             externalNativeBuild {
+                 cmake {
+-- 
+2.43.0
+

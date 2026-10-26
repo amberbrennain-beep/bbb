@@ -1,7 +1,7 @@
 From 9d415eeed3c63f28ccb68d8377d38e198cbcd3fe Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 26 Oct 2026 11:02:01 +0000
-Subject: [PATCH 39/39] [android] Build the S26 flavor with -O3 and without
+Subject: [PATCH 39/40] [android] Build the S26 flavor with -O3 and without
  debug info
 
 ---

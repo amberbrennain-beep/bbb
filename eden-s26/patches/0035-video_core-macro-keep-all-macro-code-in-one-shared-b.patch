@@ -1,7 +1,7 @@
 From c552e1741bf3c1ec50f55ce40fde8bcbe83fb3ad Mon Sep 17 00:00:00 2001
 From: simply0001 <nicolas.tobago@icloud.com>
 Date: Thu, 6 Aug 2026 02:25:02 +0200
-Subject: [PATCH 35/39] [video_core/macro] keep all macro code in one shared
+Subject: [PATCH 35/40] [video_core/macro] keep all macro code in one shared
  buffer
 
 Every macro upload got its own heap vector inside a map, and calling into the middle of a blob copied the whole tail into yet another vector before compiling, where the std::move doesn't save the allocation since dynamically sized vectors can't elide the heap. Now all uploaded words land in a single append-only vector and each method just records a start/size pair into it, so a mid-method call becomes a plain offset entry with no copy at all. Spans are only materialized at the point of use, because a stored span would dangle whenever the shared vector grows on append.
