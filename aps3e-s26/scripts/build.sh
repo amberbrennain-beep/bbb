@@ -3,7 +3,7 @@
 #
 # Needs: JDK 17+, Gradle 8.10+ on PATH (or set GRADLE), git, and an Android SDK (ANDROID_HOME) with
 #   platforms;android-35  build-tools;35.0.0  ndk;30.0.16248370  cmake;3.31.5
-# A cold build takes about 1.5 h on 4 cores and needs ~20 GB of disk (the source tree alone is 5 GB).
+# A cold build takes about an hour on 4 cores and needs ~15 GB of disk (the source tree alone is 5 GB).
 #
 # Optional release signing (otherwise the debug key is used):
 #   APS3E_KEYSTORE=/path/key.jks APS3E_KEYSTORE_PASS=... APS3E_KEY_ALIAS=... APS3E_KEY_PASS=...

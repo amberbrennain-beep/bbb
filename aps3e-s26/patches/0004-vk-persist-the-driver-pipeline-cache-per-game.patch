@@ -1,7 +1,7 @@
-From 2376047537f7cbb5031576fec1d4128815627acc Mon Sep 17 00:00:00 2001
+From c7304b034c93bb7d431a4f90cbb24567dcaa8721 Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 12:51:53 +0000
-Subject: [PATCH 04/12] vk: persist the driver pipeline cache per game
+Date: Mon, 26 Oct 2026 13:53:09 +0000
+Subject: [PATCH 04/10] vk: persist the driver pipeline cache per game
 
 main4 creates a VkPipelineCache but starts it empty every launch and drops
 it on exit, so the Adreno/Xclipse driver recompiles every pipeline from
@@ -16,6 +16,9 @@ through the table.
 
 Based on mercurious/aps3e 4b4e12f5c (upstream PR #122), reworked for
 main4's shared pipe-compiler cache.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  .../cpp/rpcs3/rpcs3/Emu/RSX/VK/VKGSRender.cpp |   4 +
  .../cpp/rpcs3/rpcs3/Emu/RSX/VK/VKPFNTable.h   |   3 +

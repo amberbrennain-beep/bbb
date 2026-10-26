@@ -15,7 +15,7 @@ Everything that differs between the two is detected at runtime; the static code 
   repository's default branch, `main2`, stopped at 1.38 in April and is 41 commits behind it.
 - **Package:** `aenu.aps3e.s26`, so it installs next to the official app instead of replacing it. It has its own
   data folder: copy firmware, games and saves over as you would for a fresh install.
-- **APK:** see [Releases / the file sent with this change](#the-apk).
+- **APK:** [`apk/aps3e-2.43-s26.apk`](apk/aps3e-2.43-s26.apk), details [below](#the-apk).
 
 ## What changed and why
 
@@ -131,10 +131,14 @@ only upstream history. The 19 that carry commits found in no upstream branch:
 
 ## Not tested on a device
 
-This build was compiled and checked here, but I have no Galaxy S26 to run it on. Everything above is reasoned
-from the code, the forks' measurements and the two chips' specifications, not measured on your phone. To compare,
-the untouched upstream 2.43 can be built from the same tree with `build.gradle.bak`; or keep the official app
-installed side by side (different package) and compare the same scene with the performance overlay.
+This build was compiled and checked statically (below), but there was no Galaxy S26 to run it on. Everything above
+is reasoned from the code, the forks' measurements and the two chips' specifications, not measured on your phone.
+
+To measure it, compare against the stock build: keep the official app installed (different package), or install
+the untouched upstream 2.43 built here with upstream's own flags, `apk/aps3e-2.43-upstream-baseline.apk`
+(package `aenu.aps3e.base`, also side by side). Run the same scene in both with the performance overlay on, for
+long enough (10+ minutes) that the phone reaches its thermal steady state: much of the expected gain is sustained
+clocks, not the first minute.
 
 Things worth checking on the device:
 
@@ -146,7 +150,29 @@ Things worth checking on the device:
 
 ## The APK
 
-Build in progress; the APK and its checksum are added here once it is finished.
+| | |
+|---|---|
+| File | [`apk/aps3e-2.43-s26.apk`](apk/aps3e-2.43-s26.apk) (41.4 MB) |
+| SHA-256 | `745bc6b7a82bf997d960a12c13ceb2d51c20a99fdc4514141ded8137db3834d4` |
+| Package / version | `aenu.aps3e.s26` / 2.43-s26 (243), arm64-v8a, Android 9+ |
+| Signing certificate SHA-256 | `cd845edbac56902e0fb480198fa0deb2f386a2d249ae99dc9185ad4ea28a75a3` (APK Signature Scheme v2) |
+
+Static checks on the built `libe.so`:
+
+| Check | Result |
+|---|---|
+| Calls into the outline-atomics helpers (`__aarch64_cas*`, `__aarch64_ldadd*`...) | 0 (upstream's `-march=armv8-a` build calls them for every atomic) |
+| Inline LSE atomic instructions | 18,075 |
+| RCpc acquire loads (`ldapr`) | 1,403 |
+| Every patch present (`RSX Idle Sleep`, `vk_pipeline_cache.bin`, JIT target log, `Xclipse`, `c1-ultra`) | yes |
+| Load segments 16 KB aligned (Android 15+ 16 KB page devices) | yes, all libraries |
+| Signature | verifies |
+
+The JIT feature override was also checked against LLVM directly: an Armv9.3 model like `c1-pro` lowers `memcpy`
+to MOPS `cpyfp/cpyfm/cpyfe` instructions, and the HWCAP-driven `-mops` turns that back into a library call when
+the kernel does not report MOPS.
+
+<!-- baseline -->
 
 ## Building
 
@@ -155,6 +181,6 @@ export ANDROID_HOME=/path/to/sdk   # platforms;android-35, build-tools;35.0.0, n
 scripts/build.sh [work-dir]        # clones upstream at c6ca182, applies patches/, runs gradle assembleRelease
 ```
 
-JDK 17+ and Gradle 8.10+ are needed. A cold build takes about 1.5 h on 4 cores and ~20 GB of disk. Set
+JDK 17+ and Gradle 8.10+ are needed. A cold build takes about an hour on 4 cores and ~15 GB of disk. Set
 `APS3E_KEYSTORE`, `APS3E_KEYSTORE_PASS`, `APS3E_KEY_ALIAS` and `APS3E_KEY_PASS` to sign with your own key;
 otherwise the debug key is used.

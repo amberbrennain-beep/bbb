@@ -1,7 +1,7 @@
-From 4da03da06e2167dc85cada75d5391e856c1d99e0 Mon Sep 17 00:00:00 2001
+From b8bd005bd5c3efb92a0478eab82dc3db2aa59761 Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 13:01:15 +0000
-Subject: [PATCH 07/12] build: Galaxy S26 release configuration
+Date: Mon, 26 Oct 2026 13:53:19 +0000
+Subject: [PATCH 07/10] build: Galaxy S26 release configuration
 
 - Track app/build.gradle (was a .bak to rename by hand), package
   aenu.aps3e.s26 so it installs beside the official app, NDK r30
@@ -17,6 +17,9 @@ Subject: [PATCH 07/12] build: Galaxy S26 release configuration
   the command line and overrode the top-level choice.
 - USE_LTO now also covers the final libe.so link, so ThinLTO runs at -O3
   and the glue code can inline into the core.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  .gitignore                                    |  2 +-
  app/build.gradle                              | 90 +++++++++++++++++++

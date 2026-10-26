@@ -1,7 +1,7 @@
-From b75cc9b3da0eb363c8019067920d81dfae7f6838 Mon Sep 17 00:00:00 2001
+From 993b9b842d80e8b78aea5ae492ef106dd4dda9ca Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 12:54:39 +0000
-Subject: [PATCH 06/12] vk: recognise Samsung Xclipse (Exynos 2600) and quiet
+Date: Mon, 26 Oct 2026 13:53:16 +0000
+Subject: [PATCH 06/10] vk: recognise Samsung Xclipse (Exynos 2600) and quiet
  Adreno
 
 Xclipse reported as an unknown vendor: "Unsupported device" at init and
@@ -10,6 +10,9 @@ RSX compute shaders. It is RDNA hardware, so give it the AMD wave64
 settings. Adreno/Turnip/Xclipse were also missing from the render-target
 usage switch, which logs "Unknown driver vendor!" on every render target
 created when strict rendering mode is off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKCompute.cpp      | 2 ++
  app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKHelpers.cpp      | 3 +++

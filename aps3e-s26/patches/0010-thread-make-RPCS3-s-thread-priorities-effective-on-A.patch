@@ -1,7 +1,7 @@
-From 7872ce5ea89fa89f385a06ed72090cb9a38004bf Mon Sep 17 00:00:00 2001
+From 77aeeeeff90e574e69acb6f7e1cd68ccffeff8ba Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 13:04:54 +0000
-Subject: [PATCH 10/12] thread: make RPCS3's thread priorities effective on
+Date: Mon, 26 Oct 2026 13:53:30 +0000
+Subject: [PATCH 10/10] thread: make RPCS3's thread priorities effective on
  Android
 
 RPCS3 raises RSX, cellAudio and rsxaudio threads (+1) and lowers its PPU
@@ -11,6 +11,9 @@ a no-op. Android apps may renice their own threads, so map +1/-1 to nice
 -4/+4. Frame-critical and audio threads then win contention with other
 runnable threads, and background compilation no longer takes equal CPU
 share from the game threads.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  app/src/main/cpp/rpcs3/Utilities/Thread.cpp | 16 ++++++++++++++++
  1 file changed, 16 insertions(+)

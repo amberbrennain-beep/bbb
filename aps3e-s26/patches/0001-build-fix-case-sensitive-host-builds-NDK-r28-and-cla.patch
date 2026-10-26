@@ -1,0 +1,61 @@
+From 71f742ba642c6fb371122a40f318917196534d7b Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 13:52:58 +0000
+Subject: [PATCH 01/10] build: fix case-sensitive host builds, NDK r28+ and
+ clang 21
+
+- Loader/iso.{cpp,h} are referenced as ISO.{cpp,h} everywhere (CMake and
+  includes); that only resolves on case-insensitive filesystems.
+- VKOverlays.h uses vk::image without including its header, which newer
+  clang rejects.
+- clang 21 rejects FFmpeg vf_v360's 'stereo < 1 + s->out_stereo >
+  STEREO_2D'; parenthesise it as upstream FFmpeg did, which is what the
+  loop means.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
+---
+ .../rpcs3/3rdparty/ffmpeg/ffmpeg-5.1.7/libavfilter/vf_v360.c    | 2 +-
+ app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h            | 1 +
+ app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.cpp => ISO.cpp}        | 0
+ app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.h => ISO.h}            | 0
+ 4 files changed, 2 insertions(+), 1 deletion(-)
+ rename app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.cpp => ISO.cpp} (100%)
+ rename app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.h => ISO.h} (100%)
+
+diff --git a/app/src/main/cpp/rpcs3/3rdparty/ffmpeg/ffmpeg-5.1.7/libavfilter/vf_v360.c b/app/src/main/cpp/rpcs3/3rdparty/ffmpeg/ffmpeg-5.1.7/libavfilter/vf_v360.c
+index 881c779ab..0dc04a25a 100644
+--- a/app/src/main/cpp/rpcs3/3rdparty/ffmpeg/ffmpeg-5.1.7/libavfilter/vf_v360.c
++++ b/app/src/main/cpp/rpcs3/3rdparty/ffmpeg/ffmpeg-5.1.7/libavfilter/vf_v360.c
+@@ -288,7 +288,7 @@ static int remap##ws##_##bits##bit_slice(AVFilterContext *ctx, void *arg, int jo
+     const AVFrame *in = td->in;                                                                            \
+     AVFrame *out = td->out;                                                                                \
+                                                                                                            \
+-    for (int stereo = 0; stereo < 1 + s->out_stereo > STEREO_2D; stereo++) {                               \
++    for (int stereo = 0; stereo < 1 + (s->out_stereo > STEREO_2D); stereo++) {                               \
+         for (int plane = 0; plane < s->nb_planes; plane++) {                                               \
+             const unsigned map = s->map[plane];                                                            \
+             const int in_linesize  = in->linesize[plane];                                                  \
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h
+index e354d237f..2ba740c63 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h
+@@ -9,6 +9,7 @@
+ #include "vkutils/data_heap.h"
+ #include "vkutils/descriptors.h"
+ #include "vkutils/graphics_pipeline_state.hpp"
++#include "vkutils/image.h"
+ 
+ #include "Emu/IdManager.h"
+ 
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Loader/iso.cpp b/app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.cpp
+similarity index 100%
+rename from app/src/main/cpp/rpcs3/rpcs3/Loader/iso.cpp
+rename to app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.cpp
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Loader/iso.h b/app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.h
+similarity index 100%
+rename from app/src/main/cpp/rpcs3/rpcs3/Loader/iso.h
+rename to app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.h
+-- 
+2.43.0
+

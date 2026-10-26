@@ -1,7 +1,7 @@
-From 20f3d2fef9761d11958b60f181503366c32ca097 Mon Sep 17 00:00:00 2001
+From 47bd29573ad8798e891cecf280d56ea9331fbadc Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 12:53:22 +0000
-Subject: [PATCH 05/12] rsx: sleep instead of spinning once the FIFO has idled
+Date: Mon, 26 Oct 2026 13:53:13 +0000
+Subject: [PATCH 05/10] rsx: sleep instead of spinning once the FIFO has idled
 
 With the FIFO empty or parked on a jump-to-self, the RSX thread yields in
 a loop. On Android the yield returns immediately when nothing else is
@@ -16,6 +16,9 @@ the local tasks right after each sleep so flips, interrupts and flush
 requests are not left to every 64th iteration.
 
 Based on HamzaDevz/aps3e 719f52bba (odin3 branch).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  app/src/main/assets/config/config.yml         |  1 +
  .../main/cpp/rpcs3/rpcs3/Emu/RSX/RSXFIFO.cpp  |  6 +++++-

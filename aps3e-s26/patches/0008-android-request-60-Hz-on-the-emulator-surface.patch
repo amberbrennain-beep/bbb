@@ -1,13 +1,16 @@
-From 4f705271d709b65985b2fafa5b4f386a133c49c8 Mon Sep 17 00:00:00 2001
+From e8288a780c7ad825c1008a802d1f03c3420529a3 Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 13:01:54 +0000
-Subject: [PATCH 08/12] android: request 60 Hz on the emulator surface
+Date: Mon, 26 Oct 2026 13:53:23 +0000
+Subject: [PATCH 08/10] android: request 60 Hz on the emulator surface
 
 PS3 games present at most 60 fps, but the S26's LTPO panel otherwise keeps
 refreshing at up to 120 Hz for the game window. Hint 60 Hz fixed-source
 content on the surface (seamless switches only, so no mode-change flash);
 the display runs at half the rate while a game is on screen, saving power
 the SoC can spend on clocks instead.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  app/src/main/java/aenu/aps3e/EmulatorActivity.java | 7 +++++++
  1 file changed, 7 insertions(+)

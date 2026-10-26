@@ -1,7 +1,7 @@
-From f959c9d675292576e8b25079f9be173bd34ad5b2 Mon Sep 17 00:00:00 2001
+From 5a6bd212554b5967c6b9e3036a61b6074cc929a6 Mon Sep 17 00:00:00 2001
 From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
-Date: Mon, 26 Oct 2026 12:49:35 +0000
-Subject: [PATCH 03/12] cpuinfo: identify Galaxy S26 cores (Lumex C1, later
+Date: Mon, 26 Oct 2026 13:53:05 +0000
+Subject: [PATCH 03/10] cpuinfo: identify Galaxy S26 cores (Lumex C1, later
  Oryon)
 
 Exynos 2600's C1-Ultra/C1-Pro were listed as "Unknown", so the LLVM CPU
@@ -9,6 +9,9 @@ picker offered "Unknown" as the only native choice (an invalid LLVM CPU
 that silently drops to generic codegen) and the device info showed
 unidentified cores. Add the C1 family and other ARMv9 parts to both
 tables, and treat Qualcomm parts below 0x100 as Oryon.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QHcVVDuR9mxorL6GkyZmzr
 ---
  app/src/main/cpp/cpuinfo.cpp                       | 13 +++++++++++++
  .../Emu/CPU/Backends/AArch64/AArch64Common.cpp     | 14 ++++++++++++++
