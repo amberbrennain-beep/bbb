@@ -1,7 +1,7 @@
 From 8e1cbc012df5416d73fd5f68019f4a3594130e05 Mon Sep 17 00:00:00 2001
 From: Nima Woods <niklas.fabritzius@pm.me>
 Date: Thu, 23 Apr 2026 17:40:55 +0200
-Subject: [PATCH 17/46] [audio_core] add safety checks to
+Subject: [PATCH 17/50] [audio_core] add safety checks to
  BiquadFilterEffectCommand to prevent SIGSEGV
 
 Signed-off-by: crueter <crueter@eden-emu.dev>

@@ -1,7 +1,7 @@
 From 04bf59dbcd10e77d6b0b552599aa0ae30fa43d6a Mon Sep 17 00:00:00 2001
 From: Ahmad <ahmad@eden-emu.dev>
 Date: Mon, 28 Sep 2026 18:51:38 -0700
-Subject: [PATCH 16/46] [hle/kernel] Fix multicore crash from stale TLS after
+Subject: [PATCH 16/50] [hle/kernel] Fix multicore crash from stale TLS after
  fiber migration
 
 Signed-off-by: Ahmad <ahmad@eden-emu.dev>

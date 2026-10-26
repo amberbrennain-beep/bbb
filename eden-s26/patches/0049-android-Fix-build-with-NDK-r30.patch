@@ -1,0 +1,49 @@
+From 4ff0f2b7b88e58a053aeaa0f2aea152368769389 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 26 Oct 2026 17:17:41 +0000
+Subject: [PATCH 49/50] [android] Fix build with NDK r30
+
+Include <vector> where it is used, and return an empty string instead of
+constructing one from a null pointer when the JNI method is missing.
+---
+ src/common/android/android_common.h | 1 +
+ src/common/fs/fs_android.cpp        | 4 ++--
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/common/android/android_common.h b/src/common/android/android_common.h
+index a16add3bd..976259d29 100644
+--- a/src/common/android/android_common.h
++++ b/src/common/android/android_common.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include <string>
++#include <vector>
+ 
+ #include <jni.h>
+ #include "common/common_types.h"
+diff --git a/src/common/fs/fs_android.cpp b/src/common/fs/fs_android.cpp
+index 9a8053222..49dec0622 100644
+--- a/src/common/fs/fs_android.cpp
++++ b/src/common/fs/fs_android.cpp
+@@ -95,7 +95,7 @@ bool Exists(const std::string& filepath) {
+ 
+ std::string GetParentDirectory(const std::string& filepath) {
+     if (s_get_parent_directory == nullptr) {
+-        return 0;
++        return {};
+     }
+     auto env = Common::Android::GetEnvForThread();
+     jstring j_return = static_cast<jstring>(env->CallStaticObjectMethod(
+@@ -108,7 +108,7 @@ std::string GetParentDirectory(const std::string& filepath) {
+ 
+ std::string GetFilename(const std::string& filepath) {
+     if (s_get_filename == nullptr) {
+-        return 0;
++        return {};
+     }
+     auto env = Common::Android::GetEnvForThread();
+     jstring j_return = static_cast<jstring>(env->CallStaticObjectMethod(
+-- 
+2.43.0
+

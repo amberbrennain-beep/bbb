@@ -81,16 +81,16 @@ From a contributor fork, with no PR open:
 
 | | |
 |---|---|
-| File | `Eden-S26-ZA-v0.0.4-rc2-1080-s26.apk` (21.0 MB, versus 25.0 MB for official v0.2.1 standard). Supersedes `Eden-S26-v0.0.4-rc2-1074-s26.apk`. |
-| SHA-256 | `74c83ec152fe1734d090ecc0026db389104725b44f5ddd1835c31823d9690185` |
+| File | `Eden-S26-v0.0.4-rc2-1084-s26.apk` (21.4 MB). Supersedes the earlier Eden S26 APKs. |
+| SHA-256 | `67ae43441f906b18ec217da963468cfb7002a23c90074c2da48cdc62f8152ec1` |
 | Package / label | `dev.eden.eden_emulator.s26` / "Eden S26", min Android 15, target Android 16 |
 | Signature | Eden's public debug key (APK signature v2). It can't update an official Eden install; it installs alongside it. |
-| Version name | `v0.0.4-rc2-1080-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
+| Version name | `v0.0.4-rc2-1084-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
 
 Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
 - **SVE/SME instructions:** 0, so it is safe on both chips.
-- **Inline LSE atomics:** about 12,300, versus 34 in the official build (which calls outline helper functions instead).
+- **Inline LSE atomics:** about 13,400, versus 34 in the official build (which calls outline helper functions instead).
 - **RCpc `ldapr` loads:** 677, versus 0.
 - **Page alignment:** 16 KB LOAD alignment, the same as the official build.
 - **SHA3 `eor3`:** the only instructions outside the ARMv8.6 baseline are in FFmpeg's CRC code. Upstream FFmpeg only runs that code after a runtime CPU check.
@@ -98,7 +98,7 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
 ## Install
 
-1. Download `Eden-S26-ZA-v0.0.4-rc2-1080-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
+1. Download `Eden-S26-v0.0.4-rc2-1084-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
 2. Launch **Eden S26**, then add your `prod.keys`, firmware and games folder (same steps as official Eden).
 3. Recommended:
    - **Snapdragon S26:** use the system driver. If a Mesa Turnip build with Adreno 8xx support is available, load it from Eden's GPU driver manager and compare.

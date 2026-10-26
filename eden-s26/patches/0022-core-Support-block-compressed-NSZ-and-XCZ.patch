@@ -1,7 +1,7 @@
 From 3cf75fbb7637c28ad1a0b609a702cda784507ca3 Mon Sep 17 00:00:00 2001
 From: PavelBARABANOV <pavelbarabanov94@gmail.com>
 Date: Sun, 18 Oct 2026 13:14:14 +0300
-Subject: [PATCH 22/46] [core] Support block-compressed NSZ and XCZ
+Subject: [PATCH 22/50] [core] Support block-compressed NSZ and XCZ
 
 (cherry picked from commit 151bb88d2be47bde28f3e344636d8599408042f4)
 ---

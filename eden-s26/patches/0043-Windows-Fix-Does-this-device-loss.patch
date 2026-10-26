@@ -1,7 +1,7 @@
-From e7385a2c02b82ba5fbf04bbe4de553173aba9194 Mon Sep 17 00:00:00 2001
+From 2cabb3d4aa16423f2df19a1c21147472b6743c7e Mon Sep 17 00:00:00 2001
 From: John <john@eden-emu.dev>
 Date: Sun, 18 Oct 2026 03:06:45 +0200
-Subject: [PATCH 43/46] Windows Fix - Does this device loss?
+Subject: [PATCH 43/50] Windows Fix - Does this device loss?
 
 (cherry picked from commit b7ab1e06ad0692fbcd3d2d4791033744325c521b)
 ---
