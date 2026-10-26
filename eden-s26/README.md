@@ -30,6 +30,7 @@ To check yours, open Eden S26 and look at the GPU name on the GPU driver screen 
 | ThinLTO (`ENABLE_LTO=ON`) | Lets the compiler inline and optimise across source files in the large `libyuzu-android.so`. |
 | No bundled Vulkan validation layer | That layer is only for debugging, so leaving it out makes the APK smaller. |
 | Separate application ID | Lets you keep the official build installed for comparison. |
+| Per-title default for Pokémon Legends: Z-A | GPU Fence Behavior becomes **Balanced** (Eden's anti-flicker mode) for that title unless you set it yourself. See [LEGENDS-ZA.md](LEGENDS-ZA.md) for the full Z-A guide. |
 
 Eden already ships the Android-side work that matters here: the ADPF performance-hint session, `isGame`/game-mode metadata
 for Samsung Game Booster, frame-rate hints, and big/little core placement. Neither S26 chip has little cores, so thread placement
@@ -55,6 +56,9 @@ From open pull requests on git.eden-emu.dev:
 | [#3943](https://git.eden-emu.dev/eden-emu/eden/pulls/3943) | wildcard | Fixes Paper Mario: TTYD crashes on Android | Game fix |
 | [#4567](https://git.eden-emu.dev/eden-emu/eden/pulls/4567) | PavelBARABANOV / a.kamaltdinov | Fixes Disco Elysium, Civilization VII and Sacred 2 Remaster | Game fixes |
 | [#4552](https://git.eden-emu.dev/eden-emu/eden/pulls/4552) | PavelBARABANOV | Supports block-compressed NSZ and XCZ files | Feature |
+| [#4546](https://git.eden-emu.dev/eden-emu/eden/pulls/4546) | John / Amicuchu | Texture cache: correct `ReinterpretImage` layout, clamped reinterpret copies, pre-emptive downloads for CPU-read images | Graphics correctness |
+| [#4551](https://git.eden-emu.dev/eden-emu/eden/pulls/4551) | xbzk | Shader recompiler tracks bindless texture handles through conditional Phi nodes (missing textures/effects) | Graphics correctness |
+| [#4558](https://git.eden-emu.dev/eden-emu/eden/pulls/4558) | PavelBARABANOV / ReiKatari | Viewport Y-flip fix for negative Y scale | Graphics correctness |
 
 From a contributor fork, with no PR open:
 
@@ -68,6 +72,7 @@ From a contributor fork, with no PR open:
 - **Already upstream:** simply0001/inline-index-bulk and Exverge/sparsevector-zeroregion. Their changes are in `master` already.
 - **x86-only:** #4400, #4516 and #3779 only affect the x86-64 JIT and do nothing on a phone.
 - **Behaviour trade-offs:** #4512 (async-shader revert: less stutter but more graphical glitches), #4525 (adds an artificial read-speed limit), #4531 (always-on GPU readback).
+- **Conflicts:** #4549 (descriptor stride fix) overlaps the Sacred 2 indexed-handle patch from #4567 and would need a manual merge.
 - **Too large or still WIP:** #4569 (393-file HLE refactor), #3151 (rewrite of the file I/O layer), #4580 (experimental AOT CPU backend), #4181 (16 KB page rework, draft), #4554 (MSAA cap, draft), and the CamilleLaVey and John experimental branches.
 
 ## This build
