@@ -113,6 +113,13 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 - **Expected gains are modest:** a few percent from compiler tuning, less GPU-thread overhead, and less shader stutter. GPU-bound games won't change much. The bigger differences are the bug and crash fixes listed above.
 - **Package-name boost:** official "Eden Optimized" uses the Genshin package name (`com.miHoYo.Yuanshen`) to trigger vendor game boosts. This build doesn't. If the official Optimized build runs a game faster on a Snapdragon S26, that boost is the reason, and a spoofed variant of this build can be made.
 
+## Profile-guided build (in progress)
+
+`./gradlew assembleGalaxyS26Release -PpgoGenerate=true` builds **Eden S26 Profiling**: the same code with
+LLVM profile counters. It writes `pgo/eden-<pid>.profraw` into Eden's data folder every two minutes and when a
+game stops, and Settings shows **Share profile data** while such files exist. The merged profile is then passed
+back with `-DYUZU_PGO_USE=<file>.profdata` for the optimised build.
+
 ## Rebuild
 
 `./build-s26.sh` clones Eden at the pinned commit, applies `patches/` and runs Eden's own Android CI script with

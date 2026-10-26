@@ -1,7 +1,7 @@
 From fcbe3fda26954f67b156e18265602c6071c1c7ca Mon Sep 17 00:00:00 2001
 From: PavelBARABANOV <pavelbarabanov94@gmail.com>
 Date: Wed, 21 Oct 2026 23:57:13 +0300
-Subject: [PATCH 18/50] Fixed Disco Elysium - bug in swapped abs/neg bits in
+Subject: [PATCH 18/51] Fixed Disco Elysium - bug in swapped abs/neg bits in
  F2I decoding
 
 (cherry picked from commit 98fe077f916e38194932059459dfa950f6ee336c)

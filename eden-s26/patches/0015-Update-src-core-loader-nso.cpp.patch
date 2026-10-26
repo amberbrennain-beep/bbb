@@ -1,7 +1,7 @@
 From 9e9d13c638de8da57d7ff6a137e16f89b279f1ea Mon Sep 17 00:00:00 2001
 From: wildcard <wildcard@eden-emu.dev>
 Date: Mon, 11 May 2026 02:38:01 +0200
-Subject: [PATCH 15/50] Update src/core/loader/nso.cpp
+Subject: [PATCH 15/51] Update src/core/loader/nso.cpp
 
 (cherry picked from commit d88f9e00c99acf7c5b4d86c7f48d725f25eb0e27)
 ---

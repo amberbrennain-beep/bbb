@@ -1,7 +1,7 @@
-From 1ef9a607d0ef77477055f775ad261d43a723b7a8 Mon Sep 17 00:00:00 2001
+From 830ec672dedc4faf574b6b251891e62f08be8457 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Mon, 26 Oct 2026 17:17:40 +0000
-Subject: [PATCH 47/50] [textures] Copy block-linear rows in 16-byte runs for
+Date: Mon, 26 Oct 2026 23:43:05 +0000
+Subject: [PATCH 47/51] [textures] Copy block-linear rows in 16-byte runs for
  small pixels
 
 Subrect swizzles (DMA engine, inline uploads, software blitter) copied one

@@ -1,7 +1,7 @@
-From 6ccb73e81efb8eac65abc9cf959ba72898577a4c Mon Sep 17 00:00:00 2001
+From e3f49eaf1ea0df3b2b25aa1dd9cffc34f72fb48c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Mon, 26 Oct 2026 17:17:41 +0000
-Subject: [PATCH 50/50] [cmake] Drop -mtune=oryon-1 from the s26 preset
+Date: Mon, 26 Oct 2026 23:43:06 +0000
+Subject: [PATCH 50/51] [cmake] Drop -mtune=oryon-1 from the s26 preset
 
 With Clang 21 it makes the backend emit SHA3 (eor3) instructions even when
 the feature is disabled in -march.

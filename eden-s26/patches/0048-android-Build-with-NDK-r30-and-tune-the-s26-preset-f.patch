@@ -1,7 +1,7 @@
-From 7d25ef8c09ad4e4cad26e361485a3402cb2a6c45 Mon Sep 17 00:00:00 2001
+From 6a1c7da80830ef76d42b48e932c1b05c58940726 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Mon, 26 Oct 2026 17:17:40 +0000
-Subject: [PATCH 48/50] [android] Build with NDK r30 and tune the s26 preset
+Date: Mon, 26 Oct 2026 23:43:05 +0000
+Subject: [PATCH 48/51] [android] Build with NDK r30 and tune the s26 preset
  for Oryon
 
 Clang 21 knows the Snapdragon 8 Elite cores; -mtune=oryon-1 changes

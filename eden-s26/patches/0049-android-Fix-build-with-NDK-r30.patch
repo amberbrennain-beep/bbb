@@ -1,7 +1,7 @@
-From 4ff0f2b7b88e58a053aeaa0f2aea152368769389 Mon Sep 17 00:00:00 2001
+From d41ae28931bbaf9f1d6e215775ba82bf19a6de72 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Mon, 26 Oct 2026 17:17:41 +0000
-Subject: [PATCH 49/50] [android] Fix build with NDK r30
+Date: Mon, 26 Oct 2026 23:43:06 +0000
+Subject: [PATCH 49/51] [android] Fix build with NDK r30
 
 Include <vector> where it is used, and return an empty string instead of
 constructing one from a null pointer when the JNI method is missing.
