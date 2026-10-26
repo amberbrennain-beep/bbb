@@ -1,7 +1,7 @@
 #!/bin/sh -e
 # Rebuild "Eden S26" from upstream Eden plus the patches in ./patches.
 #
-# Needs: git, JDK 17+, Android SDK with NDK 28.2.13676358 and CMake 3.31.5
+# Needs: git, JDK 17+, Android SDK with NDK 30.0.16248370 and CMake 3.31.5
 # (ANDROID_HOME set), glslangValidator, ninja, zstd.
 #
 #   ./build-s26.sh            -> APK ends up in $WORK/artifacts

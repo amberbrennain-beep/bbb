@@ -26,6 +26,8 @@ To check yours, open Eden S26 and look at the GPU name on the GPU driver screen 
 | Change | Why |
 |---|---|
 | CPU target `armv8.6-a+fp16+aes+sha2` (new `s26` build preset) | Official Android builds target the baseline ARMv8.0. This uses the newer instructions both S26 chips share: inline LSE atomics, dot-product, int8 matmul, BF16, FP16 and AES/SHA2. SVE is deliberately left out because the Snapdragon's Oryon cores don't implement it, so one APK runs on both chips. |
+| Clang 21 (NDK r30) instead of Clang 19 (NDK r28) | Newer optimiser. Needed two small upstream fixes: a missing `#include <vector>`, and a real bug where `fs_android.cpp` built a `std::string` from a null pointer. Oryon-specific tuning (`-mtune=oryon-1`) was tried and dropped: with Clang 21 it emits SHA3 instructions even when they are disabled, and SHA3 isn't confirmed on the phone. |
+| Faster texture swizzling | Partial texture copies (GPU DMA engine, inline uploads, software blitter) copied one pixel at a time. They now copy 16-byte runs for 1-, 2- and 4-byte pixels: 1.8x-7.9x faster in a 1024x1024 benchmark, byte-identical to the old code across 20,000 randomised cases (ASan/UBSan clean). 8- and 16-byte pixels keep the old loop, which was already as fast. |
 | `-O3` instead of `-O2 -g` | Gradle builds Android "release" as RelWithDebInfo, which is `-O2` with debug info. This flavor compiles at `-O3`. |
 | ThinLTO (`ENABLE_LTO=ON`) | Lets the compiler inline and optimise across source files in the large `libyuzu-android.so`. |
 | No bundled Vulkan validation layer | That layer is only for debugging, so leaving it out makes the APK smaller. |
