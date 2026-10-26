@@ -1,0 +1,104 @@
+From b75cc9b3da0eb363c8019067920d81dfae7f6838 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 12:54:39 +0000
+Subject: [PATCH 06/12] vk: recognise Samsung Xclipse (Exynos 2600) and quiet
+ Adreno
+
+Xclipse reported as an unknown vendor: "Unsupported device" at init and
+the Intel-tuned compute defaults (group size 128, unrolled loops) for the
+RSX compute shaders. It is RDNA hardware, so give it the AMD wave64
+settings. Adreno/Turnip/Xclipse were also missing from the render-target
+usage switch, which logs "Unknown driver vendor!" on every render target
+created when strict rendering mode is off.
+---
+ app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKCompute.cpp      | 2 ++
+ app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKHelpers.cpp      | 3 +++
+ app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKRenderTargets.h  | 3 +++
+ .../main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/chip_class.h   | 3 ++-
+ app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/device.cpp | 7 +++++++
+ 5 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKCompute.cpp b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKCompute.cpp
+index e88d4d0cb..d6ba616a6 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKCompute.cpp
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKCompute.cpp
+@@ -70,7 +70,9 @@ namespace vk
+ 				break;
+ 			case vk::driver_vendor::AMD:
+ 			case vk::driver_vendor::RADV:
++			case vk::driver_vendor::SAMSUNG:
+ 				// Wavefronts are multiples of 64. (RDNA also supports wave32)
++				// Xclipse is RDNA hardware, it was falling back to the Intel defaults (unknown vendor)
+ 				unroll_loops = false;
+ 				optimal_kernel_size = 1;
+ 				optimal_group_size = 64;
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKHelpers.cpp b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKHelpers.cpp
+index 72d46d0d3..320b19179 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKHelpers.cpp
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKHelpers.cpp
+@@ -156,6 +156,9 @@ namespace vk
+ 			// GPU hangs in some titles due to waiting for a query result
+ 			g_drv_strict_query_scopes = true;
+ 			break;
++		case driver_vendor::SAMSUNG:
++			// Xclipse (Exynos 2200 and later) needs more testing
++			break;
+ 		default:
+ 			rsx_log.warning("Unsupported device: %s", gpu_name);
+ 		}
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKRenderTargets.h b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKRenderTargets.h
+index 54b1d0589..9373d2411 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKRenderTargets.h
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKRenderTargets.h
+@@ -218,6 +218,9 @@ namespace vk
+ 			case driver_vendor::HONEYKRISP:
+ 			case driver_vendor::PANVK:
+ 			case driver_vendor::ARM_MALI:
++			case driver_vendor::QUALCOMM:
++			case driver_vendor::TURNIP:
++			case driver_vendor::SAMSUNG:
+ 				break;
+ 			}
+ 
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/chip_class.h b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/chip_class.h
+index 8472142ee..96e6f616b 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/chip_class.h
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/chip_class.h
+@@ -59,7 +59,8 @@ namespace vk
+ 		PANVK,
+ 		ARM_MALI,
+ 		QUALCOMM,
+-		TURNIP
++		TURNIP,
++		SAMSUNG // Xclipse (AMD RDNA based, Samsung driver)
+ 	};
+ 
+ 	driver_vendor get_driver_vendor();
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/device.cpp b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/device.cpp
+index c81cd94bb..29fe5c4c3 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/device.cpp
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/vkutils/device.cpp
+@@ -369,6 +369,11 @@ std::string physical_device::get_name() const
+ 				return driver_vendor::ARM_MALI;
+ 			}
+ 
++			if (gpu_name.find("Xclipse") != umax)
++			{
++				return driver_vendor::SAMSUNG;
++			}
++
+ 			if (gpu_name.find("Adreno") != umax)
+ 			{
+ #if defined(_WIN32) || defined(ANDROID)
+@@ -413,6 +418,8 @@ std::string physical_device::get_name() const
+ 				return driver_vendor::QUALCOMM;
+ 			case VK_DRIVER_ID_MESA_TURNIP:
+ 				return driver_vendor::TURNIP;
++			case VK_DRIVER_ID_SAMSUNG_PROPRIETARY:
++				return driver_vendor::SAMSUNG;
+ 			default:
+ 				// Mobile?
+ 				return driver_vendor::unknown;
+-- 
+2.43.0
+

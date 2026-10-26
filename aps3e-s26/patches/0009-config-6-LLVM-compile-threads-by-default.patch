@@ -1,0 +1,29 @@
+From 2c79124b25edbb37698c7fa288c6ed32401f5c62 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 13:02:09 +0000
+Subject: [PATCH 09/12] config: 6 LLVM compile threads by default
+
+Upstream defaults to 4 to suit low-end phones. The S26 has 8 (Snapdragon)
+or 10 (Exynos) cores and 12 GB of RAM, so PPU module compilation and SPU
+cache precompilation can run 50% wider while still leaving cores for the
+system.
+---
+ app/src/main/assets/config/config.yml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/app/src/main/assets/config/config.yml b/app/src/main/assets/config/config.yml
+index 3f0929468..9af4e0c7a 100644
+--- a/app/src/main/assets/config/config.yml
++++ b/app/src/main/assets/config/config.yml
+@@ -5,7 +5,7 @@ Core:
+   PPU Calling History: false
+   Save LLVM logs: false
+   Use LLVM CPU: ""
+-  Max LLVM Compile Threads: 4
++  Max LLVM Compile Threads: 6
+   LLVM Precompilation: true
+   Thread Scheduler Mode: Operating System
+   Thread Affinity Mask:
+-- 
+2.43.0
+

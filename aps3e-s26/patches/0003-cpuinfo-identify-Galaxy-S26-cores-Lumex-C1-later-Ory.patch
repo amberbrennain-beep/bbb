@@ -1,0 +1,81 @@
+From f959c9d675292576e8b25079f9be173bd34ad5b2 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 12:49:35 +0000
+Subject: [PATCH 03/12] cpuinfo: identify Galaxy S26 cores (Lumex C1, later
+ Oryon)
+
+Exynos 2600's C1-Ultra/C1-Pro were listed as "Unknown", so the LLVM CPU
+picker offered "Unknown" as the only native choice (an invalid LLVM CPU
+that silently drops to generic codegen) and the device info showed
+unidentified cores. Add the C1 family and other ARMv9 parts to both
+tables, and treat Qualcomm parts below 0x100 as Oryon.
+---
+ app/src/main/cpp/cpuinfo.cpp                       | 13 +++++++++++++
+ .../Emu/CPU/Backends/AArch64/AArch64Common.cpp     | 14 ++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/app/src/main/cpp/cpuinfo.cpp b/app/src/main/cpp/cpuinfo.cpp
+index ede3bd0d2..2bce27fcd 100644
+--- a/app/src/main/cpp/cpuinfo.cpp
++++ b/app/src/main/cpp/cpuinfo.cpp
+@@ -144,6 +144,12 @@ const std::vector<prossessor_info_t>& _get_processor_info_list(){
+             { 0x41, 0xd85, "cortex-x925", "armv9.2-a" },
+ 
+             { 0x41, 0xd88, "cortex-a520ae", "armv9.2-a" },
++
++            // Lumex C1 family (Exynos 2600)
++            { 0x41, 0xd8a, "c1-nano", "armv9.2-a" },
++            { 0x41, 0xd8b, "c1-pro", "armv9.2-a" },
++            { 0x41, 0xd90, "c1-premium", "armv9.2-a" },
++            { 0x41, 0xd8c, "c1-ultra", "armv9.2-a" },
+             //{ 0x41, 0xd06, "cortex-a65" },
+             //{ 0x41, 0xd43, "cortex-a65ae" },
+             { 0x41, 0xd0e, "cortex-a76ae", "armv8.2-a" },
+@@ -183,6 +189,10 @@ std::string cpu_get_processor_name(const core_info_t& core_info){
+         }
+     }
+ 
++    //Oryon generations after the X Elite (Snapdragon 8 Elite, 8 Elite Gen 5) may use new part numbers
++    if(implementer==0x51&&part<0x100)
++        return "oryon-1";
++
+     return "Unknown";
+ }
+ 
+@@ -201,5 +211,8 @@ std::string cpu_get_processor_isa(const core_info_t& core_info){
+         }
+     }
+ 
++    if(implementer==0x51&&part<0x100)
++        return "armv9.2-a";
++
+     return "Unknown";
+ }
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/CPU/Backends/AArch64/AArch64Common.cpp b/app/src/main/cpp/rpcs3/rpcs3/Emu/CPU/Backends/AArch64/AArch64Common.cpp
+index e2468655a..e92f6994c 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/CPU/Backends/AArch64/AArch64Common.cpp
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/CPU/Backends/AArch64/AArch64Common.cpp
+@@ -68,6 +68,20 @@ namespace aarch64
+         { 0x41, 0xd44, "armv8.2-a+fp16+dotprod", "", "Cortex-X1" },
+         { 0x41, 0xd4c, "armv8.2-a+fp16+dotprod", "", "Cortex-X1c" },
+         { 0x41, 0xd0c, "armv8.2-a+fp16+dotprod", "", "Neoverse-N1" },
++        { 0x41, 0xd46, "armv9-a+fp16+bf16+i8mm", "", "Cortex-A510" },
++        { 0x41, 0xd48, "armv9-a+fp16+bf16+i8mm", "", "Cortex-X2" },
++        { 0x41, 0xd4d, "armv9-a+fp16+bf16+i8mm", "", "Cortex-A715" },
++        { 0x41, 0xd4e, "armv9-a+fp16+bf16+i8mm", "", "Cortex-X3" },
++        { 0x41, 0xd80, "armv9.2-a+fp16+bf16+i8mm", "", "Cortex-A520" },
++        { 0x41, 0xd81, "armv9.2-a+fp16+bf16+i8mm", "", "Cortex-A720" },
++        { 0x41, 0xd82, "armv9.2-a+fp16+bf16+i8mm", "", "Cortex-X4" },
++        { 0x41, 0xd87, "armv9.2-a+fp16+bf16+i8mm", "", "Cortex-A725" },
++        { 0x41, 0xd85, "armv9.2-a+fp16+bf16+i8mm", "", "Cortex-X925" },
++        // Lumex C1 family (Exynos 2600: 1x C1-Ultra + 9x C1-Pro)
++        { 0x41, 0xd8a, "armv9.3-a+fp16+bf16+i8mm", "", "C1-Nano" },
++        { 0x41, 0xd8b, "armv9.3-a+fp16+bf16+i8mm", "", "C1-Pro" },
++        { 0x41, 0xd90, "armv9.3-a+fp16+bf16+i8mm", "", "C1-Premium" },
++        { 0x41, 0xd8c, "armv9.3-a+fp16+bf16+i8mm", "", "C1-Ultra" },
+         { 0x41, 0xd40, "armv8.4-a+fp16+bf16+i8mm", "", "Neoverse-V1" },
+         { 0x41, 0xd49, "armv8.5-a+fp16+bf16+i8mm", "", "Neoverse-N2" },
+         { 0x41, 0xd23, "armv8.1-m.main+pacbti+mve.fp+fp.dp", "", "Cortex-M85" },
+-- 
+2.43.0
+

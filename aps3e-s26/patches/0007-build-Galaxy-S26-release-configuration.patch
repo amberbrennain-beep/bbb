@@ -1,0 +1,186 @@
+From 4da03da06e2167dc85cada75d5391e856c1d99e0 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 13:01:15 +0000
+Subject: [PATCH 07/12] build: Galaxy S26 release configuration
+
+- Track app/build.gradle (was a .bak to rename by hand), package
+  aenu.aps3e.s26 so it installs beside the official app, NDK r30
+  (clang 21), CMake 3.31.5, signing from environment variables.
+- Release natives at -O3 without debug info. AGP defaults to
+  RelWithDebInfo, i.e. -O2 -g; desktop RPCS3 ships -O3.
+- APS3E_ARCH_FLAGS replaces the hard-coded -march=armv8-a; the S26 build
+  uses armv8.6-a+aes+sha2, implemented by both Oryon v3 and Lumex C1.
+  At armv8-a every std::atomic operation is a call into the outline
+  atomics helpers; at v8.6 they are inline LSE instructions, and RCPC,
+  LSE2, dotprod, i8mm and bf16 become available to the compiler.
+- Android no longer gets rpcs3's own -march=armv8-a, which came later on
+  the command line and overrode the top-level choice.
+- USE_LTO now also covers the final libe.so link, so ThinLTO runs at -O3
+  and the glue code can inline into the core.
+---
+ .gitignore                                    |  2 +-
+ app/build.gradle                              | 90 +++++++++++++++++++
+ app/src/main/cpp/CMakeLists.txt               | 13 ++-
+ .../buildfiles/cmake/ConfigureCompiler.cmake  |  5 +-
+ 4 files changed, 107 insertions(+), 3 deletions(-)
+ create mode 100644 app/build.gradle
+
+diff --git a/.gitignore b/.gitignore
+index 167d8d634..79026166f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -5,7 +5,7 @@ o/**
+ .idea/
+ local.properties
+ 
+-app/build.gradle
++
+ 
+ aps3e.keystore
+ aps3e.jks
+diff --git a/app/build.gradle b/app/build.gradle
+new file mode 100644
+index 000000000..c055e1225
+--- /dev/null
++++ b/app/build.gradle
+@@ -0,0 +1,90 @@
++plugins {
++    alias(libs.plugins.android.application)
++}
++
++// Release signing comes from the environment so no key material lives in the repository:
++// APS3E_KEYSTORE, APS3E_KEYSTORE_PASS, APS3E_KEY_ALIAS, APS3E_KEY_PASS. Without them the debug key is used.
++def releaseKeystore = System.getenv("APS3E_KEYSTORE")
++
++android {
++    namespace 'aenu.aps3e'
++    compileSdk 35
++    ndkVersion '30.0.16248370'
++
++    defaultConfig {
++        // Galaxy S26 build: its own package, installed next to the official aPS3e without replacing it
++        applicationId "aenu.aps3e.s26"
++
++        minSdk 28
++        targetSdk 34
++        versionCode 243
++        versionName "2.43-s26"
++
++        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
++        externalNativeBuild {
++            cmake {
++                abiFilters 'arm64-v8a'
++                // AGP builds release natives as RelWithDebInfo (-O2 -g). Use -O3 like desktop RPCS3 and drop the
++                // debug info, which only bloats the build (it is stripped from the APK anyway).
++                cppFlags '-g0'
++                cFlags '-g0'
++                arguments '-DCMAKE_BUILD_TYPE=Release',
++                        '-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG',
++                        '-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG',
++                        // ARMv8.6-A + AES/SHA2: common to Snapdragon 8 Elite Gen 5 (Oryon v3) and Exynos 2600 (C1)
++                        '-DAPS3E_ARCH_FLAGS=-march=armv8.6-a+aes+sha2',
++                        // ThinLTO for the emulator core and the final library, as desktop RPCS3 ships
++                        '-DUSE_LTO=ON'
++            }
++        }
++    }
++
++    signingConfigs {
++        release {
++            if (releaseKeystore) {
++                storeFile file(releaseKeystore)
++                storePassword System.getenv("APS3E_KEYSTORE_PASS")
++                keyAlias System.getenv("APS3E_KEY_ALIAS")
++                keyPassword System.getenv("APS3E_KEY_PASS")
++            }
++        }
++    }
++
++    buildTypes {
++        release {
++            minifyEnabled false
++            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
++            signingConfig releaseKeystore ? signingConfigs.release : signingConfigs.debug
++        }
++        debug {
++            minifyEnabled false
++        }
++    }
++
++    compileOptions {
++        sourceCompatibility JavaVersion.VERSION_11
++        targetCompatibility JavaVersion.VERSION_11
++    }
++    externalNativeBuild {
++        cmake {
++            path file('src/main/cpp/CMakeLists.txt')
++            version '3.31.5'
++        }
++    }
++
++    packaging{
++        jniLibs.useLegacyPackaging = true
++    }
++}
++
++dependencies {
++
++    implementation libs.appcompat
++    implementation libs.material
++    implementation libs.activity
++    implementation libs.constraintlayout
++    implementation libs.preference
++    testImplementation libs.junit
++    androidTestImplementation libs.ext.junit
++    androidTestImplementation libs.espresso.core
++}
+diff --git a/app/src/main/cpp/CMakeLists.txt b/app/src/main/cpp/CMakeLists.txt
+index 3fc5abf47..514f264a4 100644
+--- a/app/src/main/cpp/CMakeLists.txt
++++ b/app/src/main/cpp/CMakeLists.txt
+@@ -11,7 +11,12 @@ cmake_minimum_required(VERSION 3.22.1)
+ # build script scope).
+ project("aps3e")
+ 
+-add_compile_options(-march=armv8-a)
++# Target architecture for all native code. The default keeps upstream's baseline; device builds pass e.g.
++# -DAPS3E_ARCH_FLAGS="-march=armv8.6-a+aes+sha2" (Galaxy S26: Snapdragon 8 Elite Gen 5 and Exynos 2600 both
++# implement it), which among other things inlines LSE atomics instead of calling the outline-atomics helpers.
++set(APS3E_ARCH_FLAGS "-march=armv8-a" CACHE STRING "Target architecture flags for all native code")
++separate_arguments(APS3E_ARCH_FLAGS_LIST NATIVE_COMMAND "${APS3E_ARCH_FLAGS}")
++add_compile_options(${APS3E_ARCH_FLAGS_LIST})
+ add_compile_options(-stdlib=libc++)
+ #add_compile_options(-flto=thin)
+ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+@@ -70,6 +75,12 @@ set_target_properties(emu PROPERTIES OUTPUT_NAME "e")
+ 
+ target_link_options(emu PRIVATE -Wl,--exclude-libs,ALL)
+ 
++if(USE_LTO)
++    # rpcs3_emu is built as ThinLTO bitcode (see rpcs3/Emu/CMakeLists.txt); doing the same for the final link
++    # passes the optimisation level to the LTO backends and lets the glue code inline into the core
++    set_target_properties(emu PROPERTIES INTERPROCEDURAL_OPTIMIZATION ON)
++endif()
++
+ #target_compile_options(emu PRIVATE -flto)
+ #target_link_options(emu PRIVATE -flto)
+ 
+diff --git a/app/src/main/cpp/rpcs3/buildfiles/cmake/ConfigureCompiler.cmake b/app/src/main/cpp/rpcs3/buildfiles/cmake/ConfigureCompiler.cmake
+index e26cc0d03..9231efa67 100644
+--- a/app/src/main/cpp/rpcs3/buildfiles/cmake/ConfigureCompiler.cmake
++++ b/app/src/main/cpp/rpcs3/buildfiles/cmake/ConfigureCompiler.cmake
+@@ -29,7 +29,10 @@ else()
+ 	add_compile_options(-fno-exceptions)
+ 	add_compile_options(-fstack-protector)
+ 
+-	if(USE_NATIVE_INSTRUCTIONS AND COMPILER_SUPPORTS_MARCH_NATIVE)
++	if(ANDROID)
++		# The app's top-level CMakeLists.txt selects the target architecture (APS3E_ARCH_FLAGS); a second -march
++		# here would come later on the command line and silently override it
++	elseif(USE_NATIVE_INSTRUCTIONS AND COMPILER_SUPPORTS_MARCH_NATIVE)
+ 		add_compile_options(-march=native)
+ 	elseif(COMPILER_ARM)
+ 		# This section needs a review. Apple claims armv8.5-a on M-series but doesn't support SVE.
+-- 
+2.43.0
+

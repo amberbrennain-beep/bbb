@@ -1,0 +1,155 @@
+From f0f4902509d4061e22a92a334f7e00099fbb6e42 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 12:49:10 +0000
+Subject: [PATCH 02/12] jit: target exactly the host's HWCAP features on
+ Linux/Android AArch64
+
+The JIT only toggled sha3/dotprod/i8mm/sve/sve2 at runtime and otherwise
+trusted the CPU model. On the Galaxy S26 that is wrong both ways:
+- Exynos 2600 is detected as c1-pro/c1-ultra, which in LLVM 22 implies
+  MOPS, MTE and SME2 whether or not the kernel enabled them.
+- Snapdragon 8 Elite Gen 5 maps to oryon-1 (or to the cortex-a78 fallback
+  if its Oryon v3 part number is unknown), which under-reports what the
+  core can do.
+
+Derive LSE/LSE2, RCPC/RCPC-immo, CRC, AES, SHA2, FP16, FHM, BF16, JSCVT,
+FCMA, FlagM/FlagM2, FRINT, MOPS, CSSC and MTE from AT_HWCAP/AT_HWCAP2, keep
+SME off, and log the final target once. Unknown Qualcomm parts fall back
+to oryon-1 instead of cortex-a78, and the X Elite table name maps to its
+LLVM model.
+---
+ app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp | 86 ++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
+diff --git a/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp b/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp
+index 46a6c3ff6..12a65c396 100644
+--- a/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp
++++ b/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp
+@@ -11,6 +11,8 @@
+ #include "Crypto/unzip.h"
+ 
+ #include <charconv>
++#include <fstream>
++#include <iterator>
+ 
+ #if defined(__APPLE__)
+ #include <pthread.h>
+@@ -18,6 +20,11 @@
+ #include "util/cctype.hpp"
+ #endif
+ 
++#if defined(ARCH_ARM64) && defined(__linux__)
++#include <sys/auxv.h>
++#include <asm/hwcap.h>
++#endif
++
+ LOG_CHANNEL(jit_log, "JIT");
+ 
+ #ifdef LLVM_AVAILABLE
+@@ -683,6 +690,51 @@ bool jit_compiler::add_sub_disk_space(ssz space)
+ 	}).second;
+ }
+ 
++#if defined(ARCH_ARM64) && defined(__linux__)
++// The CPU model alone over-promises on mobile SoCs: LLVM's c1-pro/c1-ultra (Exynos 2600) imply MOPS, MTE and SME2,
++// and its oryon-1 lacks extensions that later Oryon cores (Snapdragon 8 Elite Gen 5) report. Make the JIT target
++// exactly what the kernel exposes, so the backend uses every available extension and never one that is disabled.
++static void append_host_hwcap_attributes(std::vector<std::string>& attributes)
++{
++	const u64 hwcap = getauxval(AT_HWCAP);
++	const u64 hwcap2 = getauxval(AT_HWCAP2);
++
++	const auto has_all = [](u64 caps, u64 mask) { return (caps & mask) == mask; };
++
++	const std::pair<bool, const char*> features[] =
++	{
++		{ has_all(hwcap, HWCAP_CRC32), "crc" },
++		{ has_all(hwcap, HWCAP_ATOMICS), "lse" },
++		{ has_all(hwcap, HWCAP_USCAT), "lse2" },
++		{ has_all(hwcap, HWCAP_LRCPC), "rcpc" },
++		{ has_all(hwcap, HWCAP_ILRCPC), "rcpc-immo" },
++		{ has_all(hwcap, HWCAP_ASIMDRDM), "rdm" },
++		{ has_all(hwcap, HWCAP_AES | HWCAP_PMULL), "aes" },
++		{ has_all(hwcap, HWCAP_SHA1 | HWCAP_SHA2), "sha2" },
++		{ has_all(hwcap, HWCAP_FPHP | HWCAP_ASIMDHP), "fullfp16" },
++		{ has_all(hwcap, HWCAP_ASIMDFHM), "fp16fml" },
++		{ has_all(hwcap, HWCAP_JSCVT), "jsconv" },
++		{ has_all(hwcap, HWCAP_FCMA), "complxnum" },
++		{ has_all(hwcap, HWCAP_FLAGM), "flagm" },
++		{ has_all(hwcap2, HWCAP2_FLAGM2), "altnzcv" },
++		{ has_all(hwcap2, HWCAP2_FRINT), "fptoint" },
++		{ has_all(hwcap2, HWCAP2_BF16), "bf16" },
++		{ has_all(hwcap2, HWCAP2_MOPS), "mops" },
++		{ has_all(hwcap2, HWCAP2_CSSC), "cssc" },
++		{ has_all(hwcap2, HWCAP2_MTE), "mte" },
++	};
++
++	for (const auto& [present, name] : features)
++	{
++		attributes.push_back(std::string(present ? "+" : "-") + name);
++	}
++
++	// The recompilers never enter streaming mode, keep the backend away from SME
++	attributes.push_back("-sme");
++	attributes.push_back("-sme2");
++}
++#endif
++
+ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, std::string_view _cpu, u32 flags, std::function<u64(const std::string&)> symbols_cement) noexcept
+ 	: m_context(new llvm::LLVMContext)
+ 	, m_cpu(cpu(_cpu))
+@@ -762,6 +814,23 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, st
+ 		attributes.push_back("+sve2");
+ 	else
+ 		attributes.push_back("-sve2");
++
++#if defined(__linux__)
++	append_host_hwcap_attributes(attributes);
++#endif
++
++	static const bool s_logged = [&]()
++	{
++		std::string list;
++		for (const std::string& attr : attributes)
++		{
++			list += list.empty() ? attr : "," + attr;
++		}
++
++		jit_log.notice("LLVM: Target CPU '%s' with host features %s", m_cpu, list);
++		return true;
++	}();
++	static_cast<void>(s_logged);
+ #endif
+ 
+ 	{
+@@ -1038,10 +1107,27 @@ const char * fallback_cpu_detection()
+ 		std::string result = aarch64::get_cpu_name();
+ 		if (result.empty())
+ 		{
++			// Qualcomm's custom cores since the X Elite are all Oryon. Later generations may report part numbers
++			// that LLVM does not map yet; their nearest model is oryon-1, not a Cortex-A78 from 2020.
++			// procfs reports a size of 0, so read it as a stream
++			std::ifstream cpuinfo("/proc/cpuinfo");
++			const std::string info{std::istreambuf_iterator<char>(cpuinfo), std::istreambuf_iterator<char>()};
++			if (info.find("CPU implementer\t: 0x51") != umax)
++			{
++				return "oryon-1";
++			}
++
+ 			return "cortex-a78";
+ 		}
+ 
+ 		std::transform(result.begin(), result.end(), result.begin(), utils::tolower<char>);
++
++		// The part table names this core after its first product, not after its LLVM model
++		if (result == "x-elite")
++		{
++			return "oryon-1";
++		}
++
+ 		return result;
+ 	}();
+ 
+-- 
+2.43.0
+

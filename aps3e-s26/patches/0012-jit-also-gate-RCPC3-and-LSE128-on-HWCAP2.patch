@@ -1,0 +1,51 @@
+From b3fbfd9578e79225597cec462a5e2e1b4f2c6064 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 13:12:20 +0000
+Subject: [PATCH 12/12] jit: also gate RCPC3 and LSE128 on HWCAP2
+
+LLVM's C1 models include FEAT_LRCPC3; tie it and LSE128 to the kernel's
+report like the other optional extensions.
+---
+ app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp b/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp
+index 12a65c396..606112d5b 100644
+--- a/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp
++++ b/app/src/main/cpp/rpcs3/Utilities/JITLLVM.cpp
+@@ -23,6 +23,14 @@
+ #if defined(ARCH_ARM64) && defined(__linux__)
+ #include <sys/auxv.h>
+ #include <asm/hwcap.h>
++
++// Linux 6.7+, missing from older NDK headers
++#ifndef HWCAP2_LRCPC3
++#define HWCAP2_LRCPC3 (1UL << 46)
++#endif
++#ifndef HWCAP2_LSE128
++#define HWCAP2_LSE128 (1UL << 47)
++#endif
+ #endif
+ 
+ LOG_CHANNEL(jit_log, "JIT");
+@@ -691,7 +699,7 @@ bool jit_compiler::add_sub_disk_space(ssz space)
+ }
+ 
+ #if defined(ARCH_ARM64) && defined(__linux__)
+-// The CPU model alone over-promises on mobile SoCs: LLVM's c1-pro/c1-ultra (Exynos 2600) imply MOPS, MTE and SME2,
++// The CPU model alone over-promises on mobile SoCs: LLVM's c1-pro/c1-ultra (Exynos 2600) imply MOPS, MTE, RCPC3 and SME2,
+ // and its oryon-1 lacks extensions that later Oryon cores (Snapdragon 8 Elite Gen 5) report. Make the JIT target
+ // exactly what the kernel exposes, so the backend uses every available extension and never one that is disabled.
+ static void append_host_hwcap_attributes(std::vector<std::string>& attributes)
+@@ -708,6 +716,8 @@ static void append_host_hwcap_attributes(std::vector<std::string>& attributes)
+ 		{ has_all(hwcap, HWCAP_USCAT), "lse2" },
+ 		{ has_all(hwcap, HWCAP_LRCPC), "rcpc" },
+ 		{ has_all(hwcap, HWCAP_ILRCPC), "rcpc-immo" },
++		{ has_all(hwcap2, HWCAP2_LRCPC3), "rcpc3" },
++		{ has_all(hwcap2, HWCAP2_LSE128), "lse128" },
+ 		{ has_all(hwcap, HWCAP_ASIMDRDM), "rdm" },
+ 		{ has_all(hwcap, HWCAP_AES | HWCAP_PMULL), "aes" },
+ 		{ has_all(hwcap, HWCAP_SHA1 | HWCAP_SHA2), "sha2" },
+-- 
+2.43.0
+

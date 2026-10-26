@@ -1,0 +1,35 @@
+From 4f705271d709b65985b2fafa5b4f386a133c49c8 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 13:01:54 +0000
+Subject: [PATCH 08/12] android: request 60 Hz on the emulator surface
+
+PS3 games present at most 60 fps, but the S26's LTPO panel otherwise keeps
+refreshing at up to 120 Hz for the game window. Hint 60 Hz fixed-source
+content on the surface (seamless switches only, so no mode-change flash);
+the display runs at half the rate while a game is on screen, saving power
+the SoC can spend on clocks instead.
+---
+ app/src/main/java/aenu/aps3e/EmulatorActivity.java | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/app/src/main/java/aenu/aps3e/EmulatorActivity.java b/app/src/main/java/aenu/aps3e/EmulatorActivity.java
+index 554f7fb36..d504f7828 100644
+--- a/app/src/main/java/aenu/aps3e/EmulatorActivity.java
++++ b/app/src/main/java/aenu/aps3e/EmulatorActivity.java
+@@ -637,6 +637,13 @@ public class EmulatorActivity extends AppCompatActivity {
+ 
+ 		@Override
+ 		public void surfaceCreated(SurfaceHolder holder) {
++			// PS3 output is at most 60 fps. Let a 120 Hz LTPO panel (Galaxy S26) drop to 60 Hz while a game runs,
++			// when it can switch seamlessly, instead of refreshing twice per game frame for nothing but power and heat.
++			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
++				holder.getSurface().setFrameRate(60f, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
++						Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS);
++			}
++
+ 			if (!started) {
+ 				started = true;
+ 				try {
+-- 
+2.43.0
+

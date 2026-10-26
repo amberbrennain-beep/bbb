@@ -1,0 +1,166 @@
+From 20f3d2fef9761d11958b60f181503366c32ca097 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 12:53:22 +0000
+Subject: [PATCH 05/12] rsx: sleep instead of spinning once the FIFO has idled
+
+With the FIFO empty or parked on a jump-to-self, the RSX thread yields in
+a loop. On Android the yield returns immediately when nothing else is
+runnable on that core, so RSX keeps a prime core at 100% while the game
+waits on the PPU. The Odin 3 fork measured the stock build at 104-105 C
+with the RSX thread at 97% (Snapdragon 8 Elite). On a phone that heat is
+taken back from the PPU/SPU threads through throttling.
+
+After the FIFO has been idle for one slice, sleep in slices (default
+100 us, new "Video|RSX Idle Sleep" setting, 0 restores spinning) and run
+the local tasks right after each sleep so flips, interrupts and flush
+requests are not left to every 64th iteration.
+
+Based on HamzaDevz/aps3e 719f52bba (odin3 branch).
+---
+ app/src/main/assets/config/config.yml         |  1 +
+ .../main/cpp/rpcs3/rpcs3/Emu/RSX/RSXFIFO.cpp  |  6 +++++-
+ .../cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.cpp     | 19 +++++++++++++++++++
+ .../main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.h  |  1 +
+ .../main/cpp/rpcs3/rpcs3/Emu/system_config.h  |  2 ++
+ .../java/aenu/aps3e/EmulatorSettings.java     |  1 +
+ app/src/main/res/values/strings.xml           |  1 +
+ app/src/main/res/xml/emulator_settings.xml    |  8 ++++++++
+ 8 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/assets/config/config.yml b/app/src/main/assets/config/config.yml
+index e4d5a043c..3f0929468 100644
+--- a/app/src/main/assets/config/config.yml
++++ b/app/src/main/assets/config/config.yml
+@@ -121,6 +121,7 @@ Video:
+   Shader Compiler Threads: 0
+   Driver Recovery Timeout: 1000000
+   Driver Wake-Up Delay: 0
++  RSX Idle Sleep: 100
+   Vblank Rate: 60
+   Vblank NTSC Fixup: false
+   DECR memory layout: false
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXFIFO.cpp b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXFIFO.cpp
+index 8dfc43539..ceafd3663 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXFIFO.cpp
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXFIFO.cpp
+@@ -669,7 +669,7 @@ namespace rsx
+ 				}
+ 				else
+ 				{
+-					std::this_thread::yield();
++					fifo_idle_wait();
+ 				}
+ 
+ 				return;
+@@ -702,6 +702,10 @@ namespace rsx
+ 						performance_counters.FIFO_idle_timestamp = get_system_time();
+ 						sync_point_request.release(true);
+ 					}
++					else
++					{
++						fifo_idle_wait();
++					}
+ 
+ 					performance_counters.state = FIFO::state::spinning;
+ 				}
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.cpp b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.cpp
+index cfa735fe8..38a53bf7f 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.cpp
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.cpp
+@@ -3030,6 +3030,25 @@ namespace rsx
+ 		return result;
+ 	}
+ 
++	void thread::fifo_idle_wait()
++	{
++		// A game waiting on the PPU leaves the FIFO empty or parked on a jump-to-self. Yielding there returns at once
++		// on Android when nothing else is runnable on the core, so the RSX thread kept a prime core at 100% and
++		// turned that into heat the PPU/SPU threads then lose to throttling. Past the idle threshold, sleep instead.
++		const u64 slice = g_cfg.video.rsx_idle_sleep;
++
++		if (!slice || get_system_time() - performance_counters.FIFO_idle_timestamp < slice)
++		{
++			std::this_thread::yield();
++			return;
++		}
++
++		thread_ctrl::wait_for(slice, false);
++
++		// Service deferred flips, interrupts and flush requests on the next iteration instead of every 64th
++		m_eng_interrupt_mask |= rsx::backend_interrupt;
++	}
++
+ 	void thread::fifo_wake_delay(u64 div)
+ 	{
+ 		// TODO: Nanoseconds accuracy
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.h b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.h
+index fefbfb962..e2fbfa049 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.h
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/RSXThread.h
+@@ -188,6 +188,7 @@ namespace rsx
+ 		void recover_fifo(std::source_location src_loc = std::source_location::current());
+ 
+ 		static void fifo_wake_delay(u64 div = 1);
++		void fifo_idle_wait();
+ 		u32 get_fifo_cmd() const;
+ 
+ 		void dump_regs(std::string&, std::any& custom_data) const override;
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/system_config.h b/app/src/main/cpp/rpcs3/rpcs3/Emu/system_config.h
+index 737518dfc..f5c439579 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/system_config.h
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/system_config.h
+@@ -181,6 +181,8 @@ struct cfg_root : cfg::node
+ 		cfg::_int<0, 16> shader_compiler_threads_count{ this, "Shader Compiler Threads", 0 };
+ 		cfg::_int<0, 30000000> driver_recovery_timeout{ this, "Driver Recovery Timeout", 1000000, true };
+ 		cfg::uint<0, 16667> driver_wakeup_delay{ this, "Driver Wake-Up Delay", 0, true };
++		// Once the FIFO has been idle this long (us), RSX sleeps in slices of it instead of spinning (0 = always spin)
++		cfg::uint<0, 5000> rsx_idle_sleep{ this, "RSX Idle Sleep", 100, true };
+ 		cfg::_int<1, 6000> vblank_rate{ this, "Vblank Rate", 60, true }; // Changing this from 60 may affect game speed in unexpected ways
+ 		cfg::_bool vblank_ntsc{ this, "Vblank NTSC Fixup", false, true };
+ 		cfg::_bool decr_memory_layout{ this, "DECR memory layout", false}; // Force enable increased allowed main memory range as DECR console
+diff --git a/app/src/main/java/aenu/aps3e/EmulatorSettings.java b/app/src/main/java/aenu/aps3e/EmulatorSettings.java
+index dfd5cb020..efa34ed22 100644
+--- a/app/src/main/java/aenu/aps3e/EmulatorSettings.java
++++ b/app/src/main/java/aenu/aps3e/EmulatorSettings.java
+@@ -617,6 +617,7 @@ public class EmulatorSettings extends AppCompatActivity {
+                     "Video|Anisotropic Filter Override",
+                     "Video|Minimum Scalable Dimension",
+                     "Video|Driver Wake-Up Delay",
++                    "Video|RSX Idle Sleep",
+                     "Video|FidelityFX CAS Sharpening Intensity",
+                     "Video|Vulkan|VRAM allocation limit (MB)",
+                     "Video|Performance Overlay|Framerate datapoints",
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index b73362b56..6c00fa2d3 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -513,6 +513,7 @@ Translation qwen3
+ 	<string name="emulator_settings_video_shader_compiler_threads">Shader Compiler Threads</string>
+ 	<string name="emulator_settings_video_driver_recovery_timeout">Driver Recovery Timeout</string>
+ 	<string name="emulator_settings_video_driver_wakeup_delay">Driver Wake-Up Delay</string>
++	<string name="emulator_settings_video_rsx_idle_sleep">RSX Idle Sleep (µs, 0 = spin)</string>
+ 	<string name="emulator_settings_video_vblank_rate">Vblank Rate</string>
+ 	<string name="emulator_settings_video_vblank_ntsc_fixup">Vblank NTSC Fixup</string>
+ 	<string name="emulator_settings_video_decr_memory_layout">DECR memory layout</string>
+diff --git a/app/src/main/res/xml/emulator_settings.xml b/app/src/main/res/xml/emulator_settings.xml
+index 53ccd42fb..070b90ffd 100644
+--- a/app/src/main/res/xml/emulator_settings.xml
++++ b/app/src/main/res/xml/emulator_settings.xml
+@@ -676,6 +676,14 @@
+             app:key="Video|Driver Wake-Up Delay" />
+ 
+ 
++        <aenu.preference.SeekBarPreference app:title="@string/emulator_settings_video_rsx_idle_sleep"
++            app:iconSpaceReserved="false"
++            app:min="0"
++            android:max="5000"
++            app:showSeekBarValue="true"
++            app:key="Video|RSX Idle Sleep" />
++
++
+         <aenu.preference.SeekBarPreference app:title="@string/emulator_settings_video_vblank_rate"
+             app:iconSpaceReserved="false"
+             app:min="1"
+-- 
+2.43.0
+

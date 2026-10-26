@@ -1,0 +1,40 @@
+From ba10990afb727cf985fa3a8537b3eed5a0ceb9a4 Mon Sep 17 00:00:00 2001
+From: aps3e-s26 <aps3e-s26@users.noreply.github.com>
+Date: Mon, 26 Oct 2026 12:46:54 +0000
+Subject: [PATCH 01/12] build: fix case-sensitive host builds and NDK r28+
+ include
+
+Loader/iso.{cpp,h} are referenced as ISO.{cpp,h} everywhere (CMake and
+includes); that only resolves on case-insensitive filesystems. VKOverlays.h
+uses vk::image without including its header, which newer clang rejects.
+---
+ app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h     | 1 +
+ app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.cpp => ISO.cpp} | 0
+ app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.h => ISO.h}     | 0
+ 3 files changed, 1 insertion(+)
+ rename app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.cpp => ISO.cpp} (100%)
+ rename app/src/main/cpp/rpcs3/rpcs3/Loader/{iso.h => ISO.h} (100%)
+
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h
+index e354d237f..2ba740c63 100644
+--- a/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h
++++ b/app/src/main/cpp/rpcs3/rpcs3/Emu/RSX/VK/VKOverlays.h
+@@ -9,6 +9,7 @@
+ #include "vkutils/data_heap.h"
+ #include "vkutils/descriptors.h"
+ #include "vkutils/graphics_pipeline_state.hpp"
++#include "vkutils/image.h"
+ 
+ #include "Emu/IdManager.h"
+ 
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Loader/iso.cpp b/app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.cpp
+similarity index 100%
+rename from app/src/main/cpp/rpcs3/rpcs3/Loader/iso.cpp
+rename to app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.cpp
+diff --git a/app/src/main/cpp/rpcs3/rpcs3/Loader/iso.h b/app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.h
+similarity index 100%
+rename from app/src/main/cpp/rpcs3/rpcs3/Loader/iso.h
+rename to app/src/main/cpp/rpcs3/rpcs3/Loader/ISO.h
+-- 
+2.43.0
+
