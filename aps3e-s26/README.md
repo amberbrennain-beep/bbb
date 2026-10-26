@@ -160,20 +160,25 @@ Things worth checking on the device:
 
 Static checks on the built `libe.so`:
 
-| Check | Result |
-|---|---|
-| Calls into the outline-atomics helpers (`__aarch64_cas*`, `__aarch64_ldadd*`...) | 0 (upstream's `-march=armv8-a` build calls them for every atomic) |
-| Inline LSE atomic instructions | 18,075 |
-| RCpc acquire loads (`ldapr`) | 1,403 |
-| Every patch present (`RSX Idle Sleep`, `vk_pipeline_cache.bin`, JIT target log, `Xclipse`, `c1-ultra`) | yes |
-| Load segments 16 KB aligned (Android 15+ 16 KB page devices) | yes, all libraries |
-| Signature | verifies |
+| Check | Upstream build | This build |
+|---|---|---|
+| Calls into the outline-atomics helpers (`__aarch64_cas*`, `__aarch64_ldadd*`...) | 14,681 | 87 (prebuilt NDK runtime code) |
+| Inline LSE atomic instructions | 30 | 18,083 |
+| RCpc acquire loads (`ldapr`) | 0 | 1,403 |
+| Every patch present (`RSX Idle Sleep`, `vk_pipeline_cache.bin`, JIT target log, `Xclipse`, `c1-ultra`) | | yes |
+| Load segments 16 KB aligned (Android 15+ 16 KB page devices) | yes | yes, all libraries |
+| Signature | verifies | verifies |
+
+(Counts are from the unstripped `libe.so` of each build.)
 
 The JIT feature override was also checked against LLVM directly: an Armv9.3 model like `c1-pro` lowers `memcpy`
 to MOPS `cpyfp/cpyfm/cpyfe` instructions, and the HWCAP-driven `-mops` turns that back into a library call when
 the kernel does not report MOPS.
 
-<!-- baseline -->
+**Baseline for comparison:** [`apk/aps3e-2.43-upstream-baseline.apk`](apk/aps3e-2.43-upstream-baseline.apk)
+(40.0 MB, SHA-256 `de0feadf662736f65dc852831c52f53faa8e275a4e9e5a50fb15eb7f63e62254`) is upstream `main4`
+untouched apart from the build fixes in `0001`, built with upstream's flags (`RelWithDebInfo`, `-march=armv8-a`, no
+LTO) on NDK r28. Package `aenu.aps3e.base`, same signing key, installs side by side with both others.
 
 ## Building
 
