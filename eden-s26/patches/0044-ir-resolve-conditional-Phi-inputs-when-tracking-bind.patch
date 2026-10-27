@@ -1,7 +1,7 @@
-From 09e8e8eb12fb44df23185a70d8916daef66c2489 Mon Sep 17 00:00:00 2001
+From 9952ab145f588d2bba83340f7c070513fa897073 Mon Sep 17 00:00:00 2001
 From: xbzk <xbzk@eden-emu.dev>
 Date: Sun, 18 Oct 2026 00:35:11 -0300
-Subject: [PATCH 44/51] [ir] resolve conditional Phi inputs when tracking
+Subject: [PATCH 44/53] [ir] resolve conditional Phi inputs when tracking
  bindless texture handles
 
 (cherry picked from commit 4b7570b24d8ce541d5bf03d1a4dc35e05147d75a)

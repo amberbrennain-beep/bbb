@@ -81,11 +81,11 @@ From a contributor fork, with no PR open:
 
 | | |
 |---|---|
-| File | `Eden-S26-v0.0.4-rc2-1084-s26.apk` (21.4 MB). Supersedes the earlier Eden S26 APKs. |
-| SHA-256 | `67ae43441f906b18ec217da963468cfb7002a23c90074c2da48cdc62f8152ec1` |
+| File | `Eden-S26-PGO-v0.0.4-rc2-1087-s26.apk` (21.5 MB). Profile-guided build; supersedes the earlier Eden S26 APKs. |
+| SHA-256 | `67ddd3a76c30a5fb7e236478c25fbb7bde691b16936e6b90a8a3e3c083e2f1c7` |
 | Package / label | `dev.eden.eden_emulator.s26` / "Eden S26", min Android 15, target Android 16 |
 | Signature | Eden's public debug key (APK signature v2). It can't update an official Eden install; it installs alongside it. |
-| Version name | `v0.0.4-rc2-1084-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
+| Version name | `v0.0.4-rc2-1087-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
 
 Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
@@ -98,7 +98,7 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
 ## Install
 
-1. Download `Eden-S26-v0.0.4-rc2-1084-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
+1. Download `Eden-S26-PGO-v0.0.4-rc2-1087-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
 2. Launch **Eden S26**, then add your `prod.keys`, firmware and games folder (same steps as official Eden).
 3. Recommended:
    - **Snapdragon S26:** use the system driver. If a Mesa Turnip build with Adreno 8xx support is available, load it from Eden's GPU driver manager and compare.
@@ -113,12 +113,25 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 - **Expected gains are modest:** a few percent from compiler tuning, less GPU-thread overhead, and less shader stutter. GPU-bound games won't change much. The bigger differences are the bug and crash fixes listed above.
 - **Package-name boost:** official "Eden Optimized" uses the Genshin package name (`com.miHoYo.Yuanshen`) to trigger vendor game boosts. This build doesn't. If the official Optimized build runs a game faster on a Snapdragon S26, that boost is the reason, and a spoofed variant of this build can be made.
 
-## Profile-guided build (in progress)
+## Profile-guided build
 
-`./gradlew assembleGalaxyS26Release -PpgoGenerate=true` builds **Eden S26 Profiling**: the same code with
-LLVM profile counters. It writes `pgo/eden-<pid>.profraw` into Eden's data folder every two minutes and when a
-game stops, and Settings shows **Share profile data** while such files exist. The merged profile is then passed
-back with `-DYUZU_PGO_USE=<file>.profdata` for the optimised build.
+The current APK is optimised with a profile recorded on the owner's Galaxy S26 (Snapdragon 8 Elite Gen 5,
+Adreno 840, driver 512.842.19) while playing several games, including Mario Kart 8 Deluxe. The merged profile is
+`pgo/eden-s26.profdata` (45,000 functions, 326 billion counts). The compiler uses it to lay out and inline code
+around what actually runs.
+
+The profile also pointed at two real inefficiencies in Eden's thread scheduler, both fixed here and tested
+identical to the old code:
+
+| Hotspot | Fix |
+|---|---|
+| `Common::GetParentReference` (intrusive tree node → owning `KThread`): recomputed the member offset with an element-by-element search on every call, ~5.7 billion iterations in the session | Address difference within the same storage at runtime: one `sub` instruction on arm64 |
+| `KPriorityQueue::GetFront` / `GetNextSet`: scanned the 64 priority bits one at a time on every scheduling decision, ~11.7 billion iterations | Mask + `countr_zero` (`rbit` + `clz`) |
+
+To record a new profile: `./gradlew assembleGalaxyS26Release -PpgoGenerate=true` builds **Eden S26 Profiling**,
+which writes `pgo/eden-<pid>.profraw` into Eden's data folder every two minutes and when a game stops; Settings →
+**Share profile data** sends the files. Merge them with `llvm-profdata merge` from the same NDK and pass the result
+with `-DYUZU_PGO_USE=<file>.profdata`.
 
 ## Rebuild
 

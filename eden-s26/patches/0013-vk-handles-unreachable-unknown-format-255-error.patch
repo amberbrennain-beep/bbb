@@ -1,7 +1,7 @@
 From 77785967c6af175397d25723e4f59335de50d33a Mon Sep 17 00:00:00 2001
 From: xbzk <xbzk@eden-emu.dev>
 Date: Tue, 13 Oct 2026 22:11:51 -0300
-Subject: [PATCH 13/51] [vk] handles unreachable unknown format 255 error
+Subject: [PATCH 13/53] [vk] handles unreachable unknown format 255 error
 
 (cherry picked from commit 6db5cad29c8044413c9cb96b7b5bf60bb202775b)
 ---

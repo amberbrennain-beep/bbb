@@ -1,0 +1,39 @@
+From dd8b07e1cb54f269c4be5d25cb834f4f289a9f0e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 04:06:51 +0000
+Subject: [PATCH 52/53] [common] Compute member offsets directly outside
+ constant evaluation
+
+GetParentReference ran OffsetOfCalculator's element-by-element search on
+every call, which put it at the top of a PGO profile through the kernel
+scheduler's intrusive trees. At runtime take the address difference within
+the same storage instead; it folds to a constant (one sub on arm64) and
+gives the same offsets, including members of base classes.
+---
+ src/common/parent_of_member.h | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/common/parent_of_member.h b/src/common/parent_of_member.h
+index 8e03f17d8..da2d3eda8 100644
+--- a/src/common/parent_of_member.h
++++ b/src/common/parent_of_member.h
+@@ -112,7 +112,15 @@ struct OffsetOfCalculator {
+     }
+ 
+     static constexpr std::ptrdiff_t OffsetOf(MemberType ParentType::*member) {
+-        return OffsetOfImpl(member, U.first_union);
++        if (std::is_constant_evaluated()) {
++            return OffsetOfImpl(member, U.first_union);
++        }
++        // At runtime the search above is a loop over the parent's size on every call; the
++        // address difference inside the same storage gives the same offset and folds to a
++        // constant.
++        const ParentType* const parent = GetPointer(U.parent);
++        return reinterpret_cast<const char*>(std::addressof(parent->*member)) -
++               reinterpret_cast<const char*>(parent);
+     }
+ };
+ 
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
-From 7d5c8690c8e154c867f8318b5c57baa09b95cb96 Mon Sep 17 00:00:00 2001
+From f9f26a74195b11978dee130d4a182c4086eca0e6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Mon, 26 Oct 2026 23:43:03 +0000
-Subject: [PATCH 37/51] [android] Add Galaxy S26 flavor and build preset
+Date: Tue, 27 Oct 2026 04:06:49 +0000
+Subject: [PATCH 37/53] [android] Add Galaxy S26 flavor and build preset
 
 Common ISA subset of Snapdragon 8 Elite Gen 5 and Exynos 2600 (ARMv8.6-A +
 FP16/AES/SHA2, no SVE), ThinLTO, separate application ID so it installs

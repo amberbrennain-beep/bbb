@@ -1,7 +1,7 @@
-From 0b903c46c3c0ba7de34eb016e39faa07ad02c666 Mon Sep 17 00:00:00 2001
+From 1a0027f44e8890ffb0a7eedf62fdbfd317133c27 Mon Sep 17 00:00:00 2001
 From: lizzie <lizzie@eden-emu.dev>
 Date: Mon, 23 Mar 2026 20:37:56 +0000
-Subject: [PATCH 36/51] [shader_recompiler] use reusable stable_vector<>
+Subject: [PATCH 36/53] [shader_recompiler] use reusable stable_vector<>
  instead of object pools
 
 Signed-off-by: lizzie <lizzie@eden-emu.dev>

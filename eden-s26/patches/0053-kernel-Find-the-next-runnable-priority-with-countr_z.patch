@@ -1,0 +1,58 @@
+From 1606608e2124758f1fc92517b2cfe836ee36fb95 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 04:06:51 +0000
+Subject: [PATCH 53/53] [kernel] Find the next runnable priority with
+ countr_zero
+
+KPriorityQueue::GetFront and GetNextSet walked the 64-entry priority bitset
+one bit at a time on every scheduling decision; GetFront was the hottest
+block in a PGO profile. Mask and count trailing zeros instead (rbit+clz on
+arm64); results are identical.
+---
+ src/core/hle/kernel/k_priority_queue.h | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/src/core/hle/kernel/k_priority_queue.h b/src/core/hle/kernel/k_priority_queue.h
+index 89a0c5bbe..f15388fbe 100644
+--- a/src/core/hle/kernel/k_priority_queue.h
++++ b/src/core/hle/kernel/k_priority_queue.h
+@@ -196,12 +196,7 @@ public:
+         constexpr Member* GetFront(s32 core) const {
+             ASSERT(IsValidCore(core));
+ 
+-            const s32 priority = s32([](auto const& e) {
+-                for (size_t i = 0; i < e.size(); ++i)
+-                    if (e[i])
+-                        return i;
+-                return e.size();
+-            }(m_available_priorities[core]));
++            const s32 priority = s32(GetNextSet(m_available_priorities[core], 0, true));
+             if (priority <= LowestPriority) {
+                 return m_queues[priority].GetFront(core);
+             } else {
+@@ -220,12 +215,17 @@ public:
+             }
+         }
+ 
++        // Index of the first set bit after n (at or after n when inclusive), or N if none.
+         template<size_t N>
+-        constexpr size_t GetNextSet(std::bitset<N> const& bit, size_t n) const {
+-            for (size_t i = n + 1; i < bit.size(); i++)
+-                if (bit[i])
+-                    return i;
+-            return bit.size();
++        constexpr size_t GetNextSet(std::bitset<N> const& bit, size_t n,
++                                    bool inclusive = false) const {
++            static_assert(N <= 64);
++            const size_t first = inclusive ? n : n + 1;
++            if (first >= N) {
++                return N;
++            }
++            const u64 bits = u64(bit.to_ullong()) & (~u64{0} << first);
++            return bits == 0 ? N : size_t(std::countr_zero(bits));
+         }
+ 
+         constexpr Member* GetNext(s32 core, const Member* member) const {
+-- 
+2.43.0
+

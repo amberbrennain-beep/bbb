@@ -23,6 +23,7 @@ git checkout -q -B s26 "$EDEN_COMMIT"
 git -c user.name="Eden S26 build" -c user.email="eden-s26@localhost" \
     am -q --3way "$HERE"/patches/*.patch
 
-.ci/android/build.sh -t s26 -b Release "$@"
+# Profile recorded on a Galaxy S26; drop the argument to build without PGO
+.ci/android/build.sh -t s26 -b Release -DYUZU_PGO_USE="$HERE/pgo/eden-s26.profdata" "$@"
 
 echo "-- APK: $(ls "$WORK"/artifacts/*.apk)"
