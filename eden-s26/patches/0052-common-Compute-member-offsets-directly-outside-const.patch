@@ -1,7 +1,7 @@
-From 434c01edaa0745940cc7860870574e543a8ff4e5 Mon Sep 17 00:00:00 2001
+From 4fea5c52a078669892adc9cf0da0005919c9dc82 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 06:32:53 +0000
-Subject: [PATCH 52/56] [common] Compute member offsets directly outside
+Date: Tue, 27 Oct 2026 17:04:39 +0000
+Subject: [PATCH 52/57] [common] Compute member offsets directly outside
  constant evaluation
 
 GetParentReference ran OffsetOfCalculator's element-by-element search on

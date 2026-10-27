@@ -1,0 +1,165 @@
+From e7b73790f97a06d45180598e63e41d4adfb83aca Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 17:04:40 +0000
+Subject: [PATCH 57/57] [android] Snapdragon-only S26 build: Oryon target,
+ direct calls, no hardening
+
+- s26-oryon preset: -mcpu=oryon-1+fp16+fp16fml. The flavor records the
+  /proc/cpuinfo features this requires and NativeLibrary refuses to load
+  the library, with a message naming the missing ones, on other CPUs.
+- YUZU_FAST_CALLS: -fno-semantic-interposition, -fno-plt and
+  -Bsymbolic-functions; nothing interposes symbols of an app library.
+- YUZU_DISABLE_HARDENING: no stack protector, _FORTIFY_SOURCE=0.
+- PGO builds split cold blocks out of hot functions and keep the
+  .text.hot/.text.unlikely prefixes so lld groups hot code.
+---
+ CMakeLists.txt                                | 31 +++++++++++++++++--
+ src/android/app/build.gradle.kts              | 13 +++++++-
+ .../java/org/yuzu/yuzu_emu/NativeLibrary.kt   | 24 ++++++++++++++
+ 3 files changed, 65 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 436fb8f44..3594ac95d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -357,6 +357,10 @@ if (CXX_GCC OR CXX_CLANG)
+             # No -mtune=oryon-1 either: Clang 21 lets it enable SHA3 code generation even with
+             # +nosha3, which is not confirmed on the phone's Oryon cores.
+             set(march armv8.6-a+fp16+aes+sha2)
++        elseif (${YUZU_BUILD_PRESET} STREQUAL "s26-oryon")
++            # Snapdragon 8 Elite Gen 5 only: full Oryon feature set and scheduling. The Android
++            # frontend refuses to start on CPUs missing a required feature.
++            set(mcpu oryon-1+fp16+fp16fml)
+         endif()
+     endif()
+ 
+@@ -365,12 +369,29 @@ if (CXX_GCC OR CXX_CLANG)
+         set(mtune native)
+     endif()
+ 
+-    if (DEFINED march AND DEFINED mtune)
++    if (DEFINED mcpu)
++        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=${mcpu}")
++        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcpu=${mcpu}")
++    elseif (DEFINED march AND DEFINED mtune)
+         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=${march} -mtune=${mtune}")
+         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=${march} -mtune=${mtune}")
+     endif()
+ endif()
+ 
++# Optional speed-over-safety switches (Android S26 flavor)
++option(YUZU_FAST_CALLS "Bind calls inside the shared library directly (no interposition, no PLT)" OFF)
++option(YUZU_DISABLE_HARDENING "Build without stack protector and _FORTIFY_SOURCE" OFF)
++if (YUZU_FAST_CALLS AND CXX_CLANG)
++    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fno-semantic-interposition>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-plt>)
++    add_link_options(-Wl,-Bsymbolic-functions)
++endif()
++if (YUZU_DISABLE_HARDENING)
++    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fno-stack-protector>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-U_FORTIFY_SOURCE>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-D_FORTIFY_SOURCE=0>)
++endif()
++
+ # Profile-guided optimisation
+ option(YUZU_PGO_GENERATE "Instrument the build to collect a PGO profile" OFF)
+ set(YUZU_PGO_USE "" CACHE FILEPATH "Merged .profdata file to optimise the build with")
+@@ -383,7 +404,13 @@ elseif (NOT YUZU_PGO_USE STREQUAL "" AND CXX_CLANG)
+                         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-profile-instr-out-of-date>
+                         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-profile-instr-unprofiled>
+                         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-profile-instr-missing>
+-                        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-backend-plugin>)
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-backend-plugin>
++                        # Move never-executed blocks out of hot functions, keep hot code together
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-fsplit-machine-functions>)
++    add_link_options(-Wl,-z,keep-text-section-prefix)
++    if (ENABLE_LTO)
++        add_link_options(-Wl,-mllvm,-enable-split-machine-functions)
++    endif()
+ endif()
+ 
+ # Configure C++ standard
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index d1a600b35..0f5214060 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -69,6 +69,8 @@ android {
+         targetSdk = 36
+         versionName = getGitVersion()
+         versionCode = autoVersion
++        // Space-separated /proc/cpuinfo features the native library is compiled to require
++        buildConfigField("String", "REQUIRED_CPU_FEATURES", "\"\"")
+ 
+         externalNativeBuild {
+             cmake {
+@@ -235,6 +237,13 @@ android {
+             manifestPlaceholders += mapOf("appNameBase" to appName)
+             resValue("string", "app_name_suffixed", appName)
+             applicationId = if (genshinSpoof) "com.miHoYo.Yuanshen" else "dev.eden.eden_emulator.s26"
++            // Matches -mcpu=oryon-1+fp16+fp16fml (s26-oryon preset)
++            buildConfigField(
++                "String",
++                "REQUIRED_CPU_FEATURES",
++                "\"aes pmull sha1 sha2 sha3 sha512 sm3 sm4 crc32 atomics lrcpc asimddp i8mm " +
++                    "bf16 jscvt fcma frint asimdrdm fphp asimdhp asimdfhm\""
++            )
+             versionNameSuffix = if (pgoGenerate) "-s26-profiling" else "-s26"
+ 
+             externalNativeBuild {
+@@ -242,7 +251,9 @@ android {
+                     // AGP builds release as RelWithDebInfo (-O2 -g), use -O3 instead
+                     arguments.addAll(
+                         listOf(
+-                            "-DYUZU_BUILD_PRESET=s26",
++                            "-DYUZU_BUILD_PRESET=s26-oryon",
++                            "-DYUZU_FAST_CALLS=ON",
++                            "-DYUZU_DISABLE_HARDENING=ON",
+                             "-DENABLE_LTO=ON",
+                             "-DYUZU_DOWNLOAD_ANDROID_VVL=OFF",
+                             "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O3 -DNDEBUG",
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/NativeLibrary.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/NativeLibrary.kt
+index 77222884c..099ef69c6 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/NativeLibrary.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/NativeLibrary.kt
+@@ -17,6 +17,7 @@ import androidx.annotation.Keep
+ import androidx.core.net.toUri
+ import com.google.android.material.dialog.MaterialAlertDialogBuilder
+ import org.libsdl.app.SDL
++import java.io.File
+ import java.lang.ref.WeakReference
+ import org.yuzu.yuzu_emu.activities.EmulationActivity
+ import org.yuzu.yuzu_emu.fragments.CoreErrorDialogFragment
+@@ -50,7 +51,30 @@ object NativeLibrary {
+     @JvmField
+     var sEmulationActivity = WeakReference<EmulationActivity?>(null)
+ 
++    // Builds compiled for a specific CPU would otherwise die with SIGILL at a random point
++    private fun checkCpuFeatures() {
++        val required = BuildConfig.REQUIRED_CPU_FEATURES.split(' ').filter { it.isNotEmpty() }
++        if (required.isEmpty()) {
++            return
++        }
++        val features = try {
++            File("/proc/cpuinfo").readLines()
++                .firstOrNull { it.startsWith("Features") }
++                ?.substringAfter(':')?.trim()?.split(' ')?.toSet()
++        } catch (e: Exception) {
++            null
++        } ?: return
++        val missing = required.filterNot { it in features }
++        if (missing.isNotEmpty()) {
++            throw IllegalStateException(
++                "This Eden build is compiled for the Snapdragon 8 Elite Gen 5 and this CPU " +
++                    "lacks: ${missing.joinToString(" ")}"
++            )
++        }
++    }
++
+     init {
++        checkCpuFeatures()
+         try {
+             System.loadLibrary("yuzu-android")
+             SDL.setupJNI()
+-- 
+2.43.0
+

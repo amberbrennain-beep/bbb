@@ -1,7 +1,7 @@
-From 5e6a4074685552a5c0d1bc9d2a7032f6a775b168 Mon Sep 17 00:00:00 2001
+From 1f70e2e1559dbec6a07ee00f5929d39ea0e4e26e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 06:32:54 +0000
-Subject: [PATCH 54/56] [video_core/macro] Dispatch cached macros with
+Date: Tue, 27 Oct 2026 17:04:39 +0000
+Subject: [PATCH 54/57] [video_core/macro] Dispatch cached macros with
  std::visit
 
 The cached program variant was tested alternative by alternative; the

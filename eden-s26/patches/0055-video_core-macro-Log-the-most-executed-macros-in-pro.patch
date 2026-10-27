@@ -1,7 +1,7 @@
-From c68f931a9cd8dba28d12421fe1c986b6f2dbd1e2 Mon Sep 17 00:00:00 2001
+From 630dc11acd2eeee1c75dee1f6cc6271365309bbb Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 06:32:54 +0000
-Subject: [PATCH 55/56] [video_core/macro] Log the most executed macros in
+Date: Tue, 27 Oct 2026 17:04:39 +0000
+Subject: [PATCH 55/57] [video_core/macro] Log the most executed macros in
  profiling builds
 
 With YUZU_PGO_GENERATE, count calls per cached macro and periodically log

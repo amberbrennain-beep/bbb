@@ -81,11 +81,11 @@ From a contributor fork, with no PR open:
 
 | | |
 |---|---|
-| File | `Eden-S26-v0.0.4-rc2-1090-s26.apk` (21.5 MB), profile-guided. Variant: `Eden-S26-Optimized-v0.0.4-rc2-1090-s26.apk` (Genshin package name, see below). |
-| SHA-256 | `46c945aee76a8bd9109f098ca0450a9d7214420e2eaf2d4adb8dccd07f1bc133` (standard), `4614d6f79e95db7910dfb220663402e3c38e035e78979ccbe9b8d225d4773235` (Optimized) |
+| File | `Eden-S26-v0.0.4-rc2-1091-s26.apk` (Snapdragon-only, profile-guided). Variant: `Eden-S26-Optimized-v0.0.4-rc2-1091-s26.apk` (Genshin package name). |
+| SHA-256 | `4218c6865ad94d6b4f38dbc10730e7fff9cab7212c882ddbf2737abe4d00a3b3` (standard), `1dc91cfdc476ff03e6e73fac4307cf9e5662bf9bf194bd953aba92a3a2b0c67d` (Optimized) |
 | Package / label | `dev.eden.eden_emulator.s26` / "Eden S26", min Android 15, target Android 16 |
 | Signature | Eden's public debug key (APK signature v2). It can't update an official Eden install; it installs alongside it. |
-| Version name | `v0.0.4-rc2-1090-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
+| Version name | `v0.0.4-rc2-1091-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
 
 Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
@@ -98,7 +98,7 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
 ## Install
 
-1. Download `Eden-S26-v0.0.4-rc2-1090-s26.apk` (or the Optimized variant) and open it. Allow "Install unknown apps" for your browser or file manager when asked.
+1. Download `Eden-S26-v0.0.4-rc2-1091-s26.apk` (or the Optimized variant) and open it. Allow "Install unknown apps" for your browser or file manager when asked.
 2. Launch **Eden S26**, then add your `prod.keys`, firmware and games folder (same steps as official Eden).
 3. Recommended:
    - **Snapdragon S26:** use the system driver. If a Mesa Turnip build with Adreno 8xx support is available, load it from Eden's GPU driver manager and compare.
@@ -142,6 +142,17 @@ identical to the old code:
   They are dirty-flag gated, and the top loop compiles to a memory fill, so no blind change was made. The
   *Optimized Vertex Buffers* setting (fewer Vulkan bind calls) is off by default on Android because of Turnip; it is
   worth testing per game on the stock Qualcomm driver.
+
+### Round 3: Snapdragon-only build (Galaxy S26, Snapdragon 8 Elite Gen 5)
+
+From here the APKs target the Snapdragon S26 only; the Exynos S26 needs the `s26` preset instead of `s26-oryon`.
+
+| Change | Detail |
+|---|---|
+| `-mcpu=oryon-1+fp16+fp16fml` (`s26-oryon` preset) | Oryon scheduling plus SHA3/SM4/SHA512/RNG. The flavor lists the `/proc/cpuinfo` features this needs; Eden checks them before loading the native library and stops with a message naming any that are missing, instead of crashing at a random point. |
+| Direct calls (`YUZU_FAST_CALLS`) | `-fno-semantic-interposition`, `-fno-plt`, `-Bsymbolic-functions`: calls inside `libyuzu-android.so` no longer go through PLT/GOT indirection meant for symbol interposition, which never happens to an app library. |
+| No hardening (`YUZU_DISABLE_HARDENING`) | No stack protector and `_FORTIFY_SOURCE=0` in Eden's own code. Trade-off: a memory-corruption bug triggered by a malicious game file would be easier to exploit. The prebuilt SDL3 and the NDK's libc++ keep their checks. |
+| Hot/cold layout | With the profile, `-fsplit-machine-functions` moves never-executed blocks out of hot functions and lld keeps `.text.hot`/`.text.unlikely` grouped, so the hot code shares fewer instruction-cache lines. |
 
 To record a new profile: `./gradlew assembleGalaxyS26Release -PpgoGenerate=true` builds **Eden S26 Profiling**,
 which writes `pgo/eden-<pid>.profraw` into Eden's data folder every two minutes and when a game stops; Settings →

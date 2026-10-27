@@ -1,7 +1,7 @@
-From 466d1bf7b158dd88c95c9e9b21c48246e21a637c Mon Sep 17 00:00:00 2001
+From 9386c36e6ea1dbd1e2476a6148682ec2c1be4cdb Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 06:32:54 +0000
-Subject: [PATCH 53/56] [kernel] Find the next runnable priority with
+Date: Tue, 27 Oct 2026 17:04:39 +0000
+Subject: [PATCH 53/57] [kernel] Find the next runnable priority with
  countr_zero
 
 KPriorityQueue::GetFront and GetNextSet walked the 64-entry priority bitset

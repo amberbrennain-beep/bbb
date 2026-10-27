@@ -1,7 +1,7 @@
-From 8b50e6dbb2d6492df58d774d70ce5d37cd38f1e8 Mon Sep 17 00:00:00 2001
+From a36cd160a138b984d76cd55e15758e520c295ca3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 06:32:53 +0000
-Subject: [PATCH 51/56] [android] Add a PGO profiling variant of the S26 flavor
+Date: Tue, 27 Oct 2026 17:04:38 +0000
+Subject: [PATCH 51/57] [android] Add a PGO profiling variant of the S26 flavor
 
 -PpgoGenerate=true instruments the build (YUZU_PGO_GENERATE); counters are
 written to <user>/pgo/eden-<pid>.profraw every two minutes and when a game

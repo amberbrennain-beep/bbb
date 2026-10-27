@@ -1,7 +1,7 @@
 From 91eda698d8e834e794c2251b130643055cd675af Mon Sep 17 00:00:00 2001
 From: lizzie <lizzie@eden-emu.dev>
 Date: Mon, 31 Aug 2026 17:12:45 +0000
-Subject: [PATCH 05/56] [core/arm/dynarmic] fix ICache invalidate on KPageTable
+Subject: [PATCH 05/57] [core/arm/dynarmic] fix ICache invalidate on KPageTable
 
 Signed-off-by: lizzie <lizzie@eden-emu.dev>
 (cherry picked from commit b2fd37bb262eb501b495083dc9e9121f38603efe)
