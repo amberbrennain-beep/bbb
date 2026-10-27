@@ -1,7 +1,7 @@
 From c7056865d709339d6ccf5ee16ff7b68c858dd230 Mon Sep 17 00:00:00 2001
 From: PavelBARABANOV <pavelbarabanov94@gmail.com>
 Date: Mon, 19 Oct 2026 01:48:34 +0300
-Subject: [PATCH 26/53] Install NSZ Solid to NAND
+Subject: [PATCH 26/56] Install NSZ Solid to NAND
 
 (cherry picked from commit 6b2f234e4561b5fa0607e398db0761f1c614382a)
 ---

@@ -81,11 +81,11 @@ From a contributor fork, with no PR open:
 
 | | |
 |---|---|
-| File | `Eden-S26-PGO-v0.0.4-rc2-1087-s26.apk` (21.5 MB). Profile-guided build; supersedes the earlier Eden S26 APKs. |
-| SHA-256 | `67ddd3a76c30a5fb7e236478c25fbb7bde691b16936e6b90a8a3e3c083e2f1c7` |
+| File | `Eden-S26-v0.0.4-rc2-1090-s26.apk` (21.5 MB), profile-guided. Variant: `Eden-S26-Optimized-v0.0.4-rc2-1090-s26.apk` (Genshin package name, see below). |
+| SHA-256 | `46c945aee76a8bd9109f098ca0450a9d7214420e2eaf2d4adb8dccd07f1bc133` (standard), `4614d6f79e95db7910dfb220663402e3c38e035e78979ccbe9b8d225d4773235` (Optimized) |
 | Package / label | `dev.eden.eden_emulator.s26` / "Eden S26", min Android 15, target Android 16 |
 | Signature | Eden's public debug key (APK signature v2). It can't update an official Eden install; it installs alongside it. |
-| Version name | `v0.0.4-rc2-1087-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
+| Version name | `v0.0.4-rc2-1090-s26`. This is how Eden labels builds from `master`, based on an old upstream tag. The code is master from 25 Oct 2026, newer than v0.2.1. |
 
 Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
@@ -98,7 +98,7 @@ Static checks on `libyuzu-android.so`, compared with official v0.2.1 standard:
 
 ## Install
 
-1. Download `Eden-S26-PGO-v0.0.4-rc2-1087-s26.apk` and open it. Allow "Install unknown apps" for your browser or file manager when asked.
+1. Download `Eden-S26-v0.0.4-rc2-1090-s26.apk` (or the Optimized variant) and open it. Allow "Install unknown apps" for your browser or file manager when asked.
 2. Launch **Eden S26**, then add your `prod.keys`, firmware and games folder (same steps as official Eden).
 3. Recommended:
    - **Snapdragon S26:** use the system driver. If a Mesa Turnip build with Adreno 8xx support is available, load it from Eden's GPU driver manager and compare.
@@ -127,6 +127,21 @@ identical to the old code:
 |---|---|
 | `Common::GetParentReference` (intrusive tree node → owning `KThread`): recomputed the member offset with an element-by-element search on every call, ~5.7 billion iterations in the session | Address difference within the same storage at runtime: one `sub` instruction on arm64 |
 | `KPriorityQueue::GetFront` / `GetNextSet`: scanned the 64 priority bits one at a time on every scheduling decision, ~11.7 billion iterations | Mask + `countr_zero` (`rbit` + `clz`) |
+
+### Round 2: macros, Genshin variant, buffer cache
+
+- **Macro dispatch:** GPU macros are dispatched with one `std::visit` instead of testing up to 14 types in turn
+  (the interpreter, the common case on phones, came thirteenth on every macro call).
+- **Macro statistics:** profiling builds log the 16 most-called macros (hash, calls, HLE or interpreted) and the
+  code of the hottest interpreted ones to `eden_log.txt`. That's the data needed to write native (HLE) versions of
+  the macros a game actually leans on; there is no ARM64 macro JIT, so interpreted macros are the slow path.
+- **Eden S26 Optimized:** `-PgenshinSpoof=true` builds the same code under `com.miHoYo.Yuanshen`, the package name the
+  official "Eden Optimized" uses so Qualcomm/Samsung game profiles apply. It's a separate app with its own data, and
+  can't be installed alongside Genshin Impact.
+- **Buffer cache:** reviewed the hot paths in the profile (`UsageTracker::Track`, vertex/uniform buffer updates).
+  They are dirty-flag gated, and the top loop compiles to a memory fill, so no blind change was made. The
+  *Optimized Vertex Buffers* setting (fewer Vulkan bind calls) is off by default on Android because of Turnip; it is
+  worth testing per game on the stock Qualcomm driver.
 
 To record a new profile: `./gradlew assembleGalaxyS26Release -PpgoGenerate=true` builds **Eden S26 Profiling**,
 which writes `pgo/eden-<pid>.profraw` into Eden's data folder every two minutes and when a game stops; Settings →

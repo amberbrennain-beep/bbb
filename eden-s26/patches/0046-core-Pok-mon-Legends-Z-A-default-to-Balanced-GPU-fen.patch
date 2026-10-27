@@ -1,7 +1,7 @@
-From df803cf23367c68579f43a99b50540ec9ade5148 Mon Sep 17 00:00:00 2001
+From 51c8bc07c25173fa19174af8e7553f3dc7edc9fd Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 04:06:50 +0000
-Subject: [PATCH 46/53] =?UTF-8?q?[core]=20Pok=C3=A9mon=20Legends=20Z-A:=20?=
+Date: Tue, 27 Oct 2026 06:32:52 +0000
+Subject: [PATCH 46/56] =?UTF-8?q?[core]=20Pok=C3=A9mon=20Legends=20Z-A:=20?=
  =?UTF-8?q?default=20to=20Balanced=20GPU=20fence=20behaviour?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

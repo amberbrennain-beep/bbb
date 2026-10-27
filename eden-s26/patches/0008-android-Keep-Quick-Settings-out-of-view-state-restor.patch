@@ -1,7 +1,7 @@
 From 5ef2e6fa3fe58f4c53fff05d973a080a8a00c34f Mon Sep 17 00:00:00 2001
 From: mleo2003 <mleo2003@gmail.com>
 Date: Tue, 20 Oct 2026 21:49:05 -0700
-Subject: [PATCH 08/53] [android] Keep Quick Settings out of view-state restore
+Subject: [PATCH 08/56] [android] Keep Quick Settings out of view-state restore
 
 All Quick Settings switches share one id, so restoring view state after a
 recreation flipped them and their listeners saved the per-game config after

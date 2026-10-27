@@ -1,0 +1,51 @@
+From 62169abc75acfb77fb44348943758033ba3401fb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:54 +0000
+Subject: [PATCH 56/56] [android] Add a Genshin-spoof variant of the S26 flavor
+
+-PgenshinSpoof=true builds "Eden S26 Optimized" under the
+com.miHoYo.Yuanshen application ID, as the official Optimized flavor does.
+---
+ src/android/app/build.gradle.kts | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index a5bbf08d1..d1a600b35 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -221,12 +221,20 @@ android {
+             // -PpgoGenerate=true builds the instrumented profiling variant
+             val pgoGenerate =
+                 providers.gradleProperty("pgoGenerate").orNull?.toBooleanStrictOrNull() ?: false
+-            val appName = if (pgoGenerate) "Eden S26 Profiling" else "Eden S26"
++            // -PgenshinSpoof=true uses Genshin Impact's package name, like the official Optimized
++            // build, so vendor game profiles apply to it
++            val genshinSpoof =
++                providers.gradleProperty("genshinSpoof").orNull?.toBooleanStrictOrNull() ?: false
++            val appName = when {
++                pgoGenerate -> "Eden S26 Profiling"
++                genshinSpoof -> "Eden S26 Optimized"
++                else -> "Eden S26"
++            }
+             dimension = "version"
+             minSdk = 35
+             manifestPlaceholders += mapOf("appNameBase" to appName)
+             resValue("string", "app_name_suffixed", appName)
+-            applicationId = "dev.eden.eden_emulator.s26"
++            applicationId = if (genshinSpoof) "com.miHoYo.Yuanshen" else "dev.eden.eden_emulator.s26"
+             versionNameSuffix = if (pgoGenerate) "-s26-profiling" else "-s26"
+ 
+             externalNativeBuild {
+@@ -244,6 +252,9 @@ android {
+                     if (pgoGenerate) {
+                         arguments.add("-DYUZU_PGO_GENERATE=ON")
+                     }
++                    if (genshinSpoof) {
++                        arguments.add("-DGENSHIN_SPOOF=ON")
++                    }
+                 }
+             }
+ 
+-- 
+2.43.0
+

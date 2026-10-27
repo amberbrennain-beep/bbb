@@ -1,7 +1,7 @@
-From 5237b05cd60a2fdaaedbcbec1ab44f2982ed396d Mon Sep 17 00:00:00 2001
+From 035e92b9d6ebff45b59a393bd19e8e7af0e0aabb Mon Sep 17 00:00:00 2001
 From: John <john@eden-emu.dev>
 Date: Sat, 17 Oct 2026 19:12:38 +0200
-Subject: [PATCH 42/53] Queue preemptive downloads for read
+Subject: [PATCH 42/56] Queue preemptive downloads for read
 
 (cherry picked from commit 76088a2c5d7fa8c3e35a3e2e87bcdb162c31674f)
 ---

@@ -1,0 +1,71 @@
+From 5e6a4074685552a5c0d1bc9d2a7032f6a775b168 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:54 +0000
+Subject: [PATCH 54/56] [video_core/macro] Dispatch cached macros with
+ std::visit
+
+The cached program variant was tested alternative by alternative; the
+interpreter, the common case on hosts without a macro JIT, came thirteenth
+on every macro call.
+---
+ src/video_core/macro.cpp | 44 +++++++++++++---------------------------
+ 1 file changed, 14 insertions(+), 30 deletions(-)
+
+diff --git a/src/video_core/macro.cpp b/src/video_core/macro.cpp
+index ea98be6d3..d3175b544 100644
+--- a/src/video_core/macro.cpp
++++ b/src/video_core/macro.cpp
+@@ -1360,36 +1360,20 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+             maxwell3d.RefreshParameters();
+         }
+ 
+-        if (auto program = std::get_if<HLE_DrawArraysIndirect>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_DrawIndexedIndirect>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_MultiDrawIndexedIndirectCount>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_MultiLayerClear>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_C713C83D8F63CCF3>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_D7333D26E0A93EDE>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_BindShader>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_SetRasterBoundingBox>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_ClearConstBuffer>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_ClearMemory>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_TransformFeedbackSetup>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<HLE_DrawIndirectByteCount>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<MacroInterpreterImpl>(&cached))
+-            return program->Execute(system, maxwell3d, parameters, method);
+-        if (auto program = std::get_if<std::unique_ptr<DynamicCachedMacro>>(&cached))
+-            return program->get()->Execute(system, maxwell3d, parameters, method);
+-
+-        UNREACHABLE();
++        // One indexed dispatch instead of testing each alternative in turn; interpreted macros,
++        // the common case without a macro JIT, used to come thirteenth.
++        std::visit(
++            [&](auto& program) {
++                using T = std::decay_t<decltype(program)>;
++                if constexpr (std::is_same_v<T, std::monostate> || std::is_same_v<T, HLEMacro>) {
++                    UNREACHABLE();
++                } else if constexpr (std::is_same_v<T, std::unique_ptr<DynamicCachedMacro>>) {
++                    program->Execute(system, maxwell3d, parameters, method);
++                } else {
++                    program.Execute(system, maxwell3d, parameters, method);
++                }
++            },
++            cached);
+     };
+     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
+         execute_variant(it->second.program);
+-- 
+2.43.0
+
