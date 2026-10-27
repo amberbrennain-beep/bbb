@@ -1,0 +1,31 @@
+From a2e0984ddfcb3d3f589666ae85bd2597da732d97 Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Fri, 16 Oct 2026 06:24:04 +0300
+Subject: [PATCH 45/56] fix aggelos
+
+(cherry picked from commit 63d319e0c4083fb12efe0e7b09876c830f11a606)
+---
+ src/video_core/renderer_vulkan/vk_rasterizer.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 1981603b4..d989d5d04 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -82,7 +82,12 @@ VkViewport GetViewportState(const Device& device, const Maxwell& regs, size_t in
+ 
+     if (lower_left) {
+         // Flip by surface clip height
+-        y += conv(static_cast<f32>(regs.surface_clip.height));
++        const float clip_height = conv(static_cast<f32>(regs.surface_clip.height));
++        if (src.scale_y < 0.0f && y >= clip_height) {
++            y = clip_height - y;
++        } else {
++            y += clip_height;
++        }
+         height = -height;
+     }
+ 
+-- 
+2.43.0
+

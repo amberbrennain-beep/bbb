@@ -1,0 +1,1039 @@
+From ee98e139a2b492c3aee56ed98c33f222f8071f19 Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Thu, 22 Oct 2026 00:03:30 +0300
+Subject: [PATCH 21/56] Fixed Sacred 2 Remaster - added indexed texture handles
+ support
+
+(cherry picked from commit 3e1b03d288ffa7756cc35001283f0c1d6c3781aa)
+---
+ src/shader_recompiler/environment.h           |  14 +-
+ src/shader_recompiler/ir_opt/texture_pass.cpp | 124 ++++++++++++----
+ src/shader_recompiler/shader_info.h           |   9 ++
+ src/video_core/buffer_cache/buffer_cache.h    |   9 +-
+ .../buffer_cache/buffer_cache_base.h          |  17 +++
+ src/video_core/host_shaders/CMakeLists.txt    |   1 +
+ ...lkan_block_linear_unswizzle_2d_buffer.comp |  62 ++++++++
+ .../renderer_opengl/gl_compute_pipeline.cpp   |  26 +++-
+ .../renderer_opengl/gl_graphics_pipeline.cpp  |  26 +++-
+ .../renderer_vulkan/vk_compute_pass.cpp       | 139 ++++++++++++++++++
+ .../renderer_vulkan/vk_compute_pass.h         |  24 +++
+ .../renderer_vulkan/vk_compute_pipeline.cpp   |  25 +++-
+ .../renderer_vulkan/vk_graphics_pipeline.cpp  |  26 +++-
+ .../renderer_vulkan/vk_rasterizer.cpp         |   8 +
+ .../renderer_vulkan/vk_texture_cache.cpp      |  23 +++
+ .../renderer_vulkan/vk_texture_cache.h        |   5 +
+ .../renderer_vulkan/vk_texture_cache_base.cpp |   5 +
+ src/video_core/texture_cache/texture_cache.h  |  30 ++++
+ .../texture_cache/texture_cache_base.h        |   6 +
+ 19 files changed, 527 insertions(+), 52 deletions(-)
+ create mode 100644 src/video_core/host_shaders/vulkan_block_linear_unswizzle_2d_buffer.comp
+
+diff --git a/src/shader_recompiler/environment.h b/src/shader_recompiler/environment.h
+index 184b56ebf..b3011f11f 100644
+--- a/src/shader_recompiler/environment.h
++++ b/src/shader_recompiler/environment.h
+@@ -40,9 +40,10 @@ struct HandleKey {
+     u32 sec_index, sec_offset, sec_shift_left;
+     u32 count;
+     bool has_secondary;
++    u32 mask, sec_mask;
+     constexpr bool operator==(const HandleKey& o) const noexcept {
+-        return std::tie(index, offset, shift_left, sec_index, sec_offset, sec_shift_left, count, has_secondary)
+-            == std::tie(o.index, o.offset, o.shift_left, o.sec_index, o.sec_offset, o.sec_shift_left, o.count, o.has_secondary);
++        return std::tie(index, offset, shift_left, sec_index, sec_offset, sec_shift_left, count, has_secondary, mask, sec_mask)
++            == std::tie(o.index, o.offset, o.shift_left, o.sec_index, o.sec_offset, o.sec_shift_left, o.count, o.has_secondary, o.mask, o.sec_mask);
+     }
+ };
+ struct HandleKeyHash {
+@@ -52,6 +53,7 @@ struct HandleKeyHash {
+         h ^= (size_t(k.sec_index) << 33) ^ (size_t(k.sec_offset) << 2);
+         h ^= (size_t(k.sec_shift_left) << 3);
+         h ^= (size_t(k.count) << 7);
++        h ^= (size_t(k.mask) << 11) ^ (size_t(k.sec_mask) << 13);
+         return h ^ (k.has_secondary ? 0x9e3779b97f4a7c15ULL : 0ULL);
+     }
+ };
+@@ -66,6 +68,14 @@ struct ConstBufferAddr {
+     IR::U32 dynamic_offset;
+     u32 count;
+     bool has_secondary;
++    /// The dynamic offset is a constant buffer value shifted left, the same for the whole draw
++    bool has_index_cbuf;
++    u32 index_cbuf_index;
++    u32 index_cbuf_offset;
++    u32 index_shift;
++    /// Applied after the shifts
++    u32 mask = 0xffffffff;
++    u32 secondary_mask = 0xffffffff;
+ };
+ 
+ class Environment {
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+index fe34a6755..cc4691cc1 100644
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -43,7 +43,8 @@ u32 DynamicDescriptorSizeShift(const IR::U32& dynamic_offset) {
+     if (!shift.IsImmediate())
+         return DESCRIPTOR_SIZE_SHIFT;
+     const u32 size_shift = shift.U32();
+-    return size_shift >= DESCRIPTOR_SIZE_SHIFT && size_shift < 31 ? size_shift : DESCRIPTOR_SIZE_SHIFT;
++    // Separate texture and sampler handles are 4 bytes apart
++    return size_shift >= 2 && size_shift < 31 ? size_shift : DESCRIPTOR_SIZE_SHIFT;
+ }
+ 
+ u32 DynamicDescriptorCount(u32 base_offset, u32 size_shift, u32 max_descriptors) {
+@@ -59,6 +60,37 @@ u32 DynamicDescriptorCount(u32 base_offset, u32 size_shift, u32 max_descriptors)
+     return std::min(descriptor_limit, available_count);
+ }
+ 
++struct UniformIndex {
++    u32 cbuf_index;
++    u32 cbuf_offset;
++    u32 shift;
++};
++
++/// Matches a dynamic handle offset that is a constant buffer value, optionally shifted left
++std::optional<UniformIndex> TrackUniformIndex(const IR::U32& dynamic_offset) {
++    if (dynamic_offset.IsImmediate()) {
++        return std::nullopt;
++    }
++    const IR::Inst* inst = dynamic_offset.InstRecursive();
++    u32 shift = 0;
++    if (inst->GetOpcode() == IR::Opcode::ShiftLeftLogical32) {
++        if (!inst->Arg(1).IsImmediate() || inst->Arg(0).IsImmediate()) {
++            return std::nullopt;
++        }
++        shift = inst->Arg(1).U32();
++        inst = inst->Arg(0).InstRecursive();
++    }
++    if (inst->GetOpcode() != IR::Opcode::GetCbufU32 || !inst->Arg(0).IsImmediate() ||
++        !inst->Arg(1).IsImmediate() || shift >= 32) {
++        return std::nullopt;
++    }
++    return UniformIndex{
++        .cbuf_index = inst->Arg(0).U32(),
++        .cbuf_offset = inst->Arg(1).U32(),
++        .shift = shift,
++    };
++}
++
+ u32 SaturatingSub(u32 lhs, u32 rhs) {
+     return lhs > rhs ? lhs - rhs : 0;
+ }
+@@ -273,14 +305,15 @@ static inline u32 GetTextureHandleCached(Environment& env, const ConstBufferAddr
+     // If has secondary, then it will be cbuf.secondary_{index|offset}, else its 0.
+     // So we can just hand it out the raw variable without using sec_idx or sec_off
+     // because comparing 0 against 0 will yield true.
+-    const HandleKey hk{cbuf.index, cbuf.offset, cbuf.shift_left, cbuf.secondary_index, cbuf.secondary_offset, cbuf.secondary_shift_left, cbuf.count, cbuf.has_secondary};
++    const HandleKey hk{cbuf.index, cbuf.offset, cbuf.shift_left, cbuf.secondary_index, cbuf.secondary_offset, cbuf.secondary_shift_left, cbuf.count, cbuf.has_secondary, cbuf.mask, cbuf.secondary_mask};
+     if (auto it = env.handle_cache.find(hk); it != env.handle_cache.end())
+         return it->second;
+-    const u32 sec_idx = cbuf.has_secondary ? cbuf.secondary_index  : cbuf.index;
+-    const u32 sec_off = cbuf.has_secondary ? cbuf.secondary_offset : cbuf.offset;
+-    const u32 lhs = ReadCbufCached(env, cbuf.index, cbuf.offset) << cbuf.shift_left;
+-    const u32 rhs = ReadCbufCached(env, sec_idx, sec_off) << cbuf.secondary_shift_left;
+-    const u32 handle = lhs | rhs;
++    u32 handle = (ReadCbufCached(env, cbuf.index, cbuf.offset) << cbuf.shift_left) & cbuf.mask;
++    if (cbuf.has_secondary) {
++        handle |= (ReadCbufCached(env, cbuf.secondary_index, cbuf.secondary_offset)
++                   << cbuf.secondary_shift_left) &
++                  cbuf.secondary_mask;
++    }
+     env.handle_cache.emplace(hk, handle);
+     return handle;
+ }
+@@ -352,10 +385,22 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+         if (lhs->has_secondary || rhs->has_secondary) {
+             return std::nullopt;
+         }
+-        if (lhs->count > 1 || rhs->count > 1) {
++        if (lhs->count > 1 && rhs->count > 1) {
+             return std::nullopt;
+         }
+-        if (lhs->shift_left > 0 || lhs->index > rhs->index || lhs->offset > rhs->offset) {
++        if (rhs->has_index_cbuf || lhs->has_index_cbuf) {
++            if (rhs->has_index_cbuf && lhs->has_index_cbuf) {
++                return std::nullopt;
++            }
++            if (rhs->has_index_cbuf) {
++                std::swap(lhs, rhs);
++            }
++        } else if (rhs->count > 1) {
++            // An indexed handle array combined with a single handle (e.g. texture indices with
++            // a shared sampler), only the primary handle is indexed
++            std::swap(lhs, rhs);
++        } else if (lhs->count == 1 &&
++                   (lhs->shift_left > 0 || lhs->index > rhs->index || lhs->offset > rhs->offset)) {
+             std::swap(lhs, rhs);
+         }
+         return ConstBufferAddr{
+@@ -365,9 +410,15 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+             .secondary_index = rhs->index,
+             .secondary_offset = rhs->offset,
+             .secondary_shift_left = rhs->shift_left,
+-            .dynamic_offset = {},
+-            .count = 1,
++            .dynamic_offset = lhs->dynamic_offset,
++            .count = lhs->count,
+             .has_secondary = true,
++            .has_index_cbuf = lhs->has_index_cbuf,
++            .index_cbuf_index = lhs->index_cbuf_index,
++            .index_cbuf_offset = lhs->index_cbuf_offset,
++            .index_shift = lhs->index_shift,
++            .mask = lhs->mask,
++            .secondary_mask = rhs->mask,
+         };
+     }
+     case IR::Opcode::ShiftLeftLogical32: {
+@@ -378,6 +429,8 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+         std::optional lhs{TrackCached(inst->Arg(0), env, host_info)};
+         if (lhs) {
+             lhs->shift_left = shift.U32();
++            // A mask applied before the shift moves with the value
++            lhs->mask <<= shift.U32();
+         }
+         return lhs;
+     }
+@@ -405,7 +458,7 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+         }
+         std::optional lhs{TrackCached(op1, env, host_info)};
+         if (lhs) {
+-            lhs->shift_left = static_cast<u32>(std::countr_zero(op2.U32()));
++            lhs->mask &= op2.U32();
+         }
+         return lhs;
+         break;
+@@ -435,12 +488,12 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+         };
+     }
+     IR::Inst* const offset_inst{offset.InstRecursive()};
+-    if (offset_inst->GetOpcode() != IR::Opcode::IAdd32) {
+-        return std::nullopt;
+-    }
+     u32 base_offset{};
+     IR::U32 dynamic_offset;
+-    if (offset_inst->Arg(0).IsImmediate()) {
++    if (offset_inst->GetOpcode() != IR::Opcode::IAdd32) {
++        // The handle array starts at the beginning of the constant buffer
++        dynamic_offset = IR::U32{offset};
++    } else if (offset_inst->Arg(0).IsImmediate()) {
+         base_offset = offset_inst->Arg(0).U32();
+         dynamic_offset = IR::U32{offset_inst->Arg(1)};
+     } else if (offset_inst->Arg(1).IsImmediate()) {
+@@ -450,6 +503,7 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+         return std::nullopt;
+     }
+     auto const size_shift = DynamicDescriptorSizeShift(dynamic_offset);
++    const std::optional<UniformIndex> uniform_index{TrackUniformIndex(dynamic_offset)};
+     auto const sampled_limit = (std::max)(1U, (std::min)(host_info.max_per_stage_descriptor_sampled_images,
+                                                          host_info.max_descriptor_set_sampled_images));
+     auto const resource_limit = (std::max)(1U, host_info.max_per_stage_resources);
+@@ -463,6 +517,10 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
+         .dynamic_offset = dynamic_offset,
+         .count = DynamicDescriptorCount(base_offset, size_shift, (std::min)({DESCRIPTOR_MAX_COUNT, sampled_limit, resource_limit})),
+         .has_secondary = false,
++        .has_index_cbuf = uniform_index.has_value(),
++        .index_cbuf_index = uniform_index ? uniform_index->cbuf_index : 0,
++        .index_cbuf_offset = uniform_index ? uniform_index->cbuf_offset : 0,
++        .index_shift = uniform_index ? uniform_index->shift : 0,
+     };
+ }
+ 
+@@ -497,12 +555,13 @@ TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const H
+ }
+ 
+ u32 GetTextureHandle(Environment& env, const ConstBufferAddr& cbuf) {
+-    const u32 secondary_index{cbuf.has_secondary ? cbuf.secondary_index : cbuf.index};
+-    const u32 secondary_offset{cbuf.has_secondary ? cbuf.secondary_offset : cbuf.offset};
+-    const u32 lhs_raw{env.ReadCbufValue(cbuf.index, cbuf.offset) << cbuf.shift_left};
+-    const u32 rhs_raw{env.ReadCbufValue(secondary_index, secondary_offset)
+-                      << cbuf.secondary_shift_left};
+-    return lhs_raw | rhs_raw;
++    u32 handle{(env.ReadCbufValue(cbuf.index, cbuf.offset) << cbuf.shift_left) & cbuf.mask};
++    if (cbuf.has_secondary) {
++        handle |= (env.ReadCbufValue(cbuf.secondary_index, cbuf.secondary_offset)
++                   << cbuf.secondary_shift_left) &
++                  cbuf.secondary_mask;
++    }
++    return handle;
+ }
+ 
+ [[maybe_unused]] TextureType ReadTextureType(Environment& env, const ConstBufferAddr& cbuf) {
+@@ -536,7 +595,8 @@ public:
+                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
+                    desc.secondary_shift_left == existing.secondary_shift_left &&
+                    desc.count == existing.count && desc.size_shift == existing.size_shift &&
+-                   desc.has_secondary == existing.has_secondary;
++                   desc.has_secondary == existing.has_secondary && desc.mask == existing.mask &&
++                   desc.secondary_mask == existing.secondary_mask;
+         });
+     }
+ 
+@@ -562,7 +622,12 @@ public:
+                    desc.secondary_cbuf_index == existing.secondary_cbuf_index &&
+                    desc.secondary_cbuf_offset == existing.secondary_cbuf_offset &&
+                    desc.secondary_shift_left == existing.secondary_shift_left &&
+-                   desc.count == existing.count && desc.size_shift == existing.size_shift;
++                   desc.count == existing.count && desc.size_shift == existing.size_shift &&
++                   desc.has_index_cbuf == existing.has_index_cbuf &&
++                   desc.index_cbuf_index == existing.index_cbuf_index &&
++                   desc.index_cbuf_offset == existing.index_cbuf_offset &&
++                   desc.index_shift == existing.index_shift && desc.mask == existing.mask &&
++                   desc.secondary_mask == existing.secondary_mask;
+         })};
+         // TODO: Read this from TIC
+         texture_descriptors[index].is_multisample |= desc.is_multisample;
+@@ -808,9 +873,12 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
+                     .secondary_shift_left = cbuf.secondary_shift_left,
+                     .count = count,
+                     .size_shift = size_shift,
++                    .mask = cbuf.mask,
++                    .secondary_mask = cbuf.secondary_mask,
+                 });
+             } else {
+-                count = std::min(count, sampled_dynamic_cap);
++                // A uniform index is resolved when drawing, so a single descriptor is enough
++                count = cbuf.has_index_cbuf ? 1 : std::min(count, sampled_dynamic_cap);
+                 const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+                 index = descriptors.Add(TextureDescriptor{
+                     .type = flags.type,
+@@ -826,6 +894,12 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
+                     .secondary_shift_left = cbuf.secondary_shift_left,
+                     .count = count,
+                     .size_shift = size_shift,
++                    .has_index_cbuf = cbuf.has_index_cbuf,
++                    .index_cbuf_index = cbuf.index_cbuf_index,
++                    .index_cbuf_offset = cbuf.index_cbuf_offset,
++                    .index_shift = cbuf.index_shift,
++                    .mask = cbuf.mask,
++                    .secondary_mask = cbuf.secondary_mask,
+                 });
+                 flags.is_integer.Assign(is_integer ? 1 : 0);
+             }
+diff --git a/src/shader_recompiler/shader_info.h b/src/shader_recompiler/shader_info.h
+index 71309e040..4e1b60fc1 100644
+--- a/src/shader_recompiler/shader_info.h
++++ b/src/shader_recompiler/shader_info.h
+@@ -186,6 +186,8 @@ struct TextureBufferDescriptor {
+     u32 secondary_shift_left;
+     u32 count;
+     u32 size_shift;
++    u32 mask = 0xffffffff;
++    u32 secondary_mask = 0xffffffff;
+ 
+     auto operator<=>(const TextureBufferDescriptor&) const = default;
+ };
+@@ -219,6 +221,13 @@ struct TextureDescriptor {
+     u32 secondary_shift_left;
+     u32 count;
+     u32 size_shift;
++    /// The handle offset is moved by a constant buffer value read when drawing
++    bool has_index_cbuf;
++    u32 index_cbuf_index;
++    u32 index_cbuf_offset;
++    u32 index_shift;
++    u32 mask = 0xffffffff;
++    u32 secondary_mask = 0xffffffff;
+ 
+     auto operator<=>(const TextureDescriptor&) const = default;
+ };
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index f30c85911..440373fce 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -948,9 +948,14 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+             return alignment > 1 && (offset % alignment) != 0;
+         }
+     }();
++    // Uniform data rewritten by the CPU between draws would need a transfer copy into the cached
++    // buffer, which ends the current render pass. Read it from the stream buffer instead.
++    static constexpr u32 MAX_STREAMED_UNIFORM_BYTES = static_cast<u32>(16_KiB);
+     const bool use_fast_buffer = needs_alignment_stream
+-        || (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size
+-            && !memory_tracker.IsRegionGpuModified(device_addr, size));
++        || (has_host_buffer && !memory_tracker.IsRegionGpuModified(device_addr, size)
++            && (size <= channel_state->uniform_buffer_skip_cache_size
++                || (size <= MAX_STREAMED_UNIFORM_BYTES
++                    && memory_tracker.IsRegionCpuModified(device_addr, size))));
+     if (use_fast_buffer) {
+         if constexpr (IS_OPENGL) {
+             if (runtime.HasFastBufferSubData()) {
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 26bf3dd9e..0e1048d36 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -259,6 +259,23 @@ public:
+ 
+     void BindHostComputeBuffers();
+ 
++    /// Calls func(buffer, offset, device_addr, size) for each storage buffer the current compute
++    /// dispatch writes through a single host buffer
++    template <typename Func>
++    void ForEachWrittenComputeStorageBuffer(Func&& func) {
++        const u32 written = channel_state->enabled_compute_storage_buffers &
++                            channel_state->written_compute_storage_buffers;
++        ForEachEnabledBit(written, [&](u32 index) {
++            const Binding& binding = channel_state->compute_storage_buffers[index];
++            if (binding.buffer_id == NULL_BUFFER_ID || binding.segment_count != 0 ||
++                binding.size == 0) {
++                return;
++            }
++            Buffer& buffer = slot_buffers[binding.buffer_id];
++            func(buffer, buffer.Offset(binding.device_addr), binding.device_addr, binding.size);
++        });
++    }
++
+     void SetUniformBuffersState(const std::array<u32, NUM_STAGES>& mask,
+                                 const UniformBufferSizes* sizes);
+ 
+diff --git a/src/video_core/host_shaders/CMakeLists.txt b/src/video_core/host_shaders/CMakeLists.txt
+index c4e7ac3f6..9e27efa9c 100644
+--- a/src/video_core/host_shaders/CMakeLists.txt
++++ b/src/video_core/host_shaders/CMakeLists.txt
+@@ -83,6 +83,7 @@ set(SHADER_FILES
+     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_present.vert
+     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_present_scaleforce_fp16.frag
+     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_present_scaleforce_fp32.frag
++    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_block_linear_unswizzle_2d_buffer.comp
+     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_quad_indexed.comp
+     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_turbo_mode.comp
+     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_uint8.comp
+diff --git a/src/video_core/host_shaders/vulkan_block_linear_unswizzle_2d_buffer.comp b/src/video_core/host_shaders/vulkan_block_linear_unswizzle_2d_buffer.comp
+new file mode 100644
+index 000000000..35cc1c998
+--- /dev/null
++++ b/src/video_core/host_shaders/vulkan_block_linear_unswizzle_2d_buffer.comp
+@@ -0,0 +1,62 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#version 460 core
++
++// Copies a block linear 2D image from a buffer into a tightly packed linear buffer, 4 bytes at a
++// time. 16 byte chunks of a row are contiguous in a GOB, so any texel size works as long as the
++// row size is a multiple of 4 bytes.
++
++layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
++
++layout(std430, set = 0, binding = 0) readonly buffer InputBuffer {
++    uint swizzled[];
++};
++
++layout(std430, set = 0, binding = 1) writeonly buffer OutputBuffer {
++    uint linear[];
++};
++
++layout(push_constant) uniform PushConstants {
++    uint src_word_offset;
++    uint row_words;
++    uint height;
++    uint layer_stride;
++    uint block_size;
++    uint x_shift;
++    uint block_height;
++    uint block_height_mask;
++};
++
++const uint GOB_SIZE_X_SHIFT = 6;
++const uint GOB_SIZE_Y_SHIFT = 3;
++const uint GOB_SIZE_SHIFT = GOB_SIZE_X_SHIFT + GOB_SIZE_Y_SHIFT;
++
++uint SwizzleTable(uint pos) {
++    const uint t[8] = uint[](
++        0x12100200, 0x13110301, 0x16140604, 0x17150705,
++        0x1a180a08, 0x1b190b09, 0x1e1c0e0c, 0x1f1d0f0d
++    );
++    const uint i = pos >> 4;
++    const uint h = (t[i / 4] >> ((i % 4) * 8)) & 0xff;
++    return (h << 4) | (pos & 0xf);
++}
++
++void main() {
++    const uint word = gl_GlobalInvocationID.x;
++    const uint y = gl_GlobalInvocationID.y;
++    const uint layer = gl_GlobalInvocationID.z;
++    if (word >= row_words || y >= height) {
++        return;
++    }
++    const uint x = word * 4;
++    const uint block_y = y >> GOB_SIZE_Y_SHIFT;
++
++    uint offset = layer * layer_stride;
++    offset += (block_y >> block_height) * block_size;
++    offset += (block_y & block_height_mask) << GOB_SIZE_SHIFT;
++    offset += (x >> GOB_SIZE_X_SHIFT) << x_shift;
++    offset += SwizzleTable((y & 7) * 64 + (x & 63));
++
++    linear[(layer * height + y) * row_words + word] = swizzled[src_word_offset + offset / 4];
++}
+diff --git a/src/video_core/renderer_opengl/gl_compute_pipeline.cpp b/src/video_core/renderer_opengl/gl_compute_pipeline.cpp
+index f0a7baf9a..36b92ba8c 100644
+--- a/src/video_core/renderer_opengl/gl_compute_pipeline.cpp
++++ b/src/video_core/renderer_opengl/gl_compute_pipeline.cpp
+@@ -107,22 +107,36 @@ void ComputePipeline::Configure() {
+     const auto read_handle{[&](const auto& desc, u32 index) {
+         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
+         const u32 index_offset{index << desc.size_shift};
+-        const u32 offset{desc.cbuf_offset + index_offset};
++        u32 offset{desc.cbuf_offset + index_offset};
++        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++            if (desc.has_index_cbuf) {
++                ASSERT(((qmd.const_buffer_enable_mask >> desc.index_cbuf_index) & 1) != 0);
++                offset += gpu_memory->Read<u32>(cbufs[desc.index_cbuf_index].Address() +
++                                                desc.index_cbuf_offset)
++                          << desc.index_shift;
++            }
++        }
+         const GPUVAddr addr{cbufs[desc.cbuf_index].Address() + offset};
+         if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
+                       std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
+             if (desc.has_secondary) {
+                 ASSERT(((qmd.const_buffer_enable_mask >> desc.secondary_cbuf_index) & 1) != 0);
+-                const u32 secondary_offset{desc.secondary_cbuf_offset + index_offset};
++                const u32 secondary_offset{desc.secondary_cbuf_offset};
+                 const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].Address() +
+                                              secondary_offset};
+-                const u32 lhs_raw{gpu_memory->Read<u32>(addr) << desc.shift_left};
+-                const u32 rhs_raw{gpu_memory->Read<u32>(separate_addr)
+-                                  << desc.secondary_shift_left};
++                const u32 lhs_raw{(gpu_memory->Read<u32>(addr) << desc.shift_left) & desc.mask};
++                const u32 rhs_raw{(gpu_memory->Read<u32>(separate_addr)
++                                   << desc.secondary_shift_left) &
++                                  desc.secondary_mask};
+                 return TexturePair(lhs_raw | rhs_raw, via_header_index);
+             }
+         }
+-        return TexturePair(gpu_memory->Read<u32>(addr), via_header_index);
++        u32 raw{gpu_memory->Read<u32>(addr)};
++        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
++                      std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
++            raw &= desc.mask;
++        }
++        return TexturePair(raw, via_header_index);
+     }};
+     const auto add_image{[&](const auto& desc, bool blacklist) {
+         for (u32 index = 0; index < desc.count; ++index) {
+diff --git a/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp b/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
+index 83545463a..73ca5384f 100644
+--- a/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
++++ b/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
+@@ -308,23 +308,37 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+         const auto read_handle{[&](const auto& desc, u32 index) {
+             ASSERT(cbufs[desc.cbuf_index].enabled);
+             const u32 index_offset{index << desc.size_shift};
+-            const u32 offset{desc.cbuf_offset + index_offset};
++            u32 offset{desc.cbuf_offset + index_offset};
++            if constexpr (std::is_same_v<decltype(desc), const TextureDescriptor&>) {
++                if (desc.has_index_cbuf) {
++                    ASSERT(cbufs[desc.index_cbuf_index].enabled);
++                    offset += gpu_memory->Read<u32>(cbufs[desc.index_cbuf_index].address +
++                                                    desc.index_cbuf_offset)
++                              << desc.index_shift;
++                }
++            }
+             const GPUVAddr addr{cbufs[desc.cbuf_index].address + offset};
+             if constexpr (std::is_same_v<decltype(desc), const TextureDescriptor&> ||
+                           std::is_same_v<decltype(desc), const TextureBufferDescriptor&>) {
+                 if (desc.has_secondary) {
+                     ASSERT(cbufs[desc.secondary_cbuf_index].enabled);
+-                    const u32 second_offset{desc.secondary_cbuf_offset + index_offset};
++                    const u32 second_offset{desc.secondary_cbuf_offset};
+                     const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].address +
+                                                  second_offset};
+-                    const u32 lhs_raw{gpu_memory->Read<u32>(addr) << desc.shift_left};
+-                    const u32 rhs_raw{gpu_memory->Read<u32>(separate_addr)
+-                                      << desc.secondary_shift_left};
++                    const u32 lhs_raw{(gpu_memory->Read<u32>(addr) << desc.shift_left) & desc.mask};
++                    const u32 rhs_raw{(gpu_memory->Read<u32>(separate_addr)
++                                       << desc.secondary_shift_left) &
++                                      desc.secondary_mask};
+                     const u32 raw{lhs_raw | rhs_raw};
+                     return TexturePair(raw, via_header_index);
+                 }
+             }
+-            return TexturePair(gpu_memory->Read<u32>(addr), via_header_index);
++            u32 raw{gpu_memory->Read<u32>(addr)};
++            if constexpr (std::is_same_v<decltype(desc), const TextureDescriptor&> ||
++                          std::is_same_v<decltype(desc), const TextureBufferDescriptor&>) {
++                raw &= desc.mask;
++            }
++            return TexturePair(raw, via_header_index);
+         }};
+         const auto add_image{[&](const auto& desc, bool blacklist) LAMBDA_FORCEINLINE {
+             for (u32 index = 0; index < desc.count; ++index) {
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pass.cpp b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+index ab5856017..2bd1aa876 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pass.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+@@ -20,6 +20,7 @@
+ #include "video_core/host_shaders/queries_prefix_scan_sum_comp_spv.h"
+ #include "video_core/host_shaders/queries_prefix_scan_sum_nosubgroups_comp_spv.h"
+ #include "video_core/host_shaders/resolve_conditional_render_comp_spv.h"
++#include "video_core/host_shaders/vulkan_block_linear_unswizzle_2d_buffer_comp_spv.h"
+ #include "video_core/host_shaders/vulkan_quad_indexed_comp_spv.h"
+ #include "video_core/host_shaders/vulkan_uint8_comp_spv.h"
+ #include "video_core/host_shaders/block_linear_unswizzle_3d_bcn_comp_spv.h"
+@@ -31,6 +32,7 @@
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
+ #include "video_core/texture_cache/accelerated_swizzle.h"
+ #include "video_core/texture_cache/types.h"
++#include "video_core/texture_cache/util.h"
+ #include "video_core/textures/decoders.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+@@ -640,6 +642,143 @@ struct alignas(16) BlockLinearUnswizzle3DPushConstants {
+ };
+ static_assert(sizeof(BlockLinearUnswizzle3DPushConstants) <= 128);
+ 
++struct BlockLinearUnswizzle2DBufferPushConstants {
++    u32 src_word_offset;
++    u32 row_words;
++    u32 height;
++    u32 layer_stride;
++    u32 block_size;
++    u32 x_shift;
++    u32 block_height;
++    u32 block_height_mask;
++};
++
++BlockLinearUnswizzle2DBufferPass::BlockLinearUnswizzle2DBufferPass(
++    const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool_,
++    StagingBufferPool& staging_buffer_pool_,
++    ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
++    : ComputePass(device_, scheduler_, descriptor_pool_, INPUT_OUTPUT_DESCRIPTOR_SET_BINDINGS,
++                  INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE, INPUT_OUTPUT_BANK_INFO,
++                  COMPUTE_PUSH_CONSTANT_RANGE<sizeof(BlockLinearUnswizzle2DBufferPushConstants)>,
++                  VULKAN_BLOCK_LINEAR_UNSWIZZLE_2D_BUFFER_COMP_SPV),
++      scheduler{scheduler_}, staging_buffer_pool{staging_buffer_pool_},
++      compute_pass_descriptor_queue{compute_pass_descriptor_queue_} {}
++
++BlockLinearUnswizzle2DBufferPass::~BlockLinearUnswizzle2DBufferPass() = default;
++
++bool BlockLinearUnswizzle2DBufferPass::IsSupported(const Image& image) {
++    const VideoCommon::ImageInfo& info = image.info;
++    if (info.type != VideoCommon::ImageType::e2D || info.num_samples != 1 ||
++        VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture ||
++        VideoCore::Surface::DefaultBlockWidth(info.format) != 1 ||
++        VideoCore::Surface::DefaultBlockHeight(info.format) != 1 ||
++        True(image.flags & VideoCommon::ImageFlagBits::Converted) ||
++        True(image.flags & VideoCommon::ImageFlagBits::Rescaled)) {
++        return false;
++    }
++    const u32 bytes_per_block = VideoCore::Surface::BytesPerBlock(info.format);
++    for (const VideoCommon::SwizzleParameters& swizzle : VideoCommon::FullUploadSwizzles(info)) {
++        if ((swizzle.num_tiles.width * bytes_per_block) % 4 != 0 || swizzle.num_tiles.depth != 1) {
++            return false;
++        }
++    }
++    return true;
++}
++
++std::pair<VkBuffer, boost::container::small_vector<VkBufferImageCopy, 16>>
++BlockLinearUnswizzle2DBufferPass::Unswizzle(Image& image, VkBuffer src_buffer,
++                                            VkDeviceSize src_offset) {
++    const VideoCommon::ImageInfo& info = image.info;
++    const auto swizzles = VideoCommon::FullUploadSwizzles(info);
++    const u32 bytes_per_block = VideoCore::Surface::BytesPerBlock(info.format);
++    const u32 layers = static_cast<u32>(info.resources.layers);
++    const VkDeviceSize alignment = (std::max<VkDeviceSize>)(device.GetStorageBufferAlignment(), 4);
++
++    VkDeviceSize total_size = 0;
++    for (const VideoCommon::SwizzleParameters& swizzle : swizzles) {
++        total_size = Common::AlignUp(total_size, alignment);
++        total_size += VkDeviceSize{swizzle.num_tiles.width} * bytes_per_block *
++                      swizzle.num_tiles.height * layers;
++    }
++    const StagingBufferRef linear = staging_buffer_pool.Request(total_size, MemoryUsage::DeviceLocal);
++
++    scheduler.RequestOutsideRenderPassOperationContext();
++    scheduler.Record([](vk::CommandBuffer cmdbuf) {
++        static constexpr VkMemoryBarrier READ_BARRIER{
++            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
++            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
++        };
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, READ_BARRIER);
++    });
++
++    boost::container::small_vector<VkBufferImageCopy, 16> copies;
++    VkDeviceSize linear_offset = 0;
++    for (const VideoCommon::SwizzleParameters& swizzle : swizzles) {
++        linear_offset = Common::AlignUp(linear_offset, alignment);
++        const auto params = VideoCommon::Accelerated::MakeBlockLinearSwizzle2DParams(swizzle, info);
++        const u32 row_words = swizzle.num_tiles.width * bytes_per_block / 4;
++        const u32 height = swizzle.num_tiles.height;
++        const VkDeviceSize level_size = VkDeviceSize{row_words} * 4 * height * layers;
++        const VkDeviceSize level_src = src_offset + swizzle.buffer_offset;
++        const VkDeviceSize aligned_src = level_src & ~(alignment - 1);
++        const VkDeviceSize src_size = image.guest_size_bytes - swizzle.buffer_offset +
++                                      (level_src - aligned_src);
++
++        compute_pass_descriptor_queue.Acquire(scheduler, 2);
++        compute_pass_descriptor_queue.AddBuffer(src_buffer, aligned_src, src_size);
++        compute_pass_descriptor_queue.AddBuffer(linear.buffer, linear.offset + linear_offset,
++                                                level_size);
++        const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
++        const BlockLinearUnswizzle2DBufferPushConstants push{
++            .src_word_offset = static_cast<u32>((level_src - aligned_src) / 4),
++            .row_words = row_words,
++            .height = height,
++            .layer_stride = params.layer_stride,
++            .block_size = params.block_size,
++            .x_shift = params.x_shift,
++            .block_height = params.block_height,
++            .block_height_mask = params.block_height_mask,
++        };
++        scheduler.Record([this, descriptor_data, push, layers](vk::CommandBuffer cmdbuf) {
++            static constexpr u32 WORKGROUP_SIZE_X = 64;
++            const VkDescriptorSet set = descriptor_allocator.Commit();
++            device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
++            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
++            cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
++            cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, push);
++            cmdbuf.Dispatch(Common::DivCeil(push.row_words, WORKGROUP_SIZE_X), push.height, layers);
++        });
++        copies.push_back(VkBufferImageCopy{
++            .bufferOffset = linear.offset + linear_offset,
++            .bufferRowLength = 0,
++            .bufferImageHeight = 0,
++            .imageSubresource{
++                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++                .mipLevel = static_cast<u32>(swizzle.level),
++                .baseArrayLayer = 0,
++                .layerCount = layers,
++            },
++            .imageOffset{0, 0, 0},
++            .imageExtent{swizzle.num_tiles.width, height, 1},
++        });
++        linear_offset += level_size;
++    }
++    scheduler.Record([](vk::CommandBuffer cmdbuf) {
++        static constexpr VkMemoryBarrier WRITE_BARRIER{
++            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
++            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
++        };
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, WRITE_BARRIER);
++    });
++    return {linear.buffer, std::move(copies)};
++}
++
+ BlockLinearUnswizzle3DPass::BlockLinearUnswizzle3DPass(
+     const Device& device_, Scheduler& scheduler_,
+     DescriptorPool& descriptor_pool_,
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pass.h b/src/video_core/renderer_vulkan/vk_compute_pass.h
+index 3d30aa6bd..64258c401 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pass.h
++++ b/src/video_core/renderer_vulkan/vk_compute_pass.h
+@@ -10,6 +10,8 @@
+ #include <span>
+ #include <utility>
+ 
++#include <boost/container/small_vector.hpp>
++
+ #include "common/common_types.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+@@ -137,6 +139,28 @@ private:
+     MemoryAllocator& memory_allocator;
+ };
+ 
++class BlockLinearUnswizzle2DBufferPass final : public ComputePass {
++public:
++    explicit BlockLinearUnswizzle2DBufferPass(
++        const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool_,
++        StagingBufferPool& staging_buffer_pool_,
++        ComputePassDescriptorQueue& compute_pass_descriptor_queue_);
++    ~BlockLinearUnswizzle2DBufferPass();
++
++    /// Returns true when the guest layout of the image can be unswizzled by this pass
++    [[nodiscard]] static bool IsSupported(const Image& image);
++
++    /// Unswizzles the block linear guest data of the image, read from a GPU buffer, into a linear
++    /// buffer. Returns the linear buffer and the copies that upload it into the image.
++    std::pair<VkBuffer, boost::container::small_vector<VkBufferImageCopy, 16>> Unswizzle(
++        Image& image, VkBuffer src_buffer, VkDeviceSize src_offset);
++
++private:
++    Scheduler& scheduler;
++    StagingBufferPool& staging_buffer_pool;
++    ComputePassDescriptorQueue& compute_pass_descriptor_queue;
++};
++
+ class BlockLinearUnswizzle3DPass final : public ComputePass {
+ public:
+     explicit BlockLinearUnswizzle3DPass(const Device& device_, Scheduler& scheduler_,
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+index 29356cfce..7b4be4b20 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pipeline.cpp
+@@ -174,21 +174,36 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
+     const auto read_handle{[&](const auto& desc, u32 index) {
+         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);
+         const u32 index_offset{index << desc.size_shift};
+-        const u32 offset{desc.cbuf_offset + index_offset};
++        u32 offset{desc.cbuf_offset + index_offset};
++        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++            if (desc.has_index_cbuf) {
++                ASSERT(((qmd.const_buffer_enable_mask >> desc.index_cbuf_index) & 1) != 0);
++                offset += gpu_memory.Read<u32>(cbufs[desc.index_cbuf_index].Address() +
++                                               desc.index_cbuf_offset)
++                          << desc.index_shift;
++            }
++        }
+         const GPUVAddr addr{cbufs[desc.cbuf_index].Address() + offset};
+         if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
+                       std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
+             if (desc.has_secondary) {
+                 ASSERT(((qmd.const_buffer_enable_mask >> desc.secondary_cbuf_index) & 1) != 0);
+-                const u32 secondary_offset{desc.secondary_cbuf_offset + index_offset};
++                const u32 secondary_offset{desc.secondary_cbuf_offset};
+                 const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].Address() +
+                                              secondary_offset};
+-                const u32 lhs_raw{gpu_memory.Read<u32>(addr) << desc.shift_left};
+-                const u32 rhs_raw{gpu_memory.Read<u32>(separate_addr) << desc.secondary_shift_left};
++                const u32 lhs_raw{(gpu_memory.Read<u32>(addr) << desc.shift_left) & desc.mask};
++                const u32 rhs_raw{(gpu_memory.Read<u32>(separate_addr)
++                                   << desc.secondary_shift_left) &
++                                  desc.secondary_mask};
+                 return TexturePair(lhs_raw | rhs_raw, via_header_index);
+             }
+         }
+-        return TexturePair(gpu_memory.Read<u32>(addr), via_header_index);
++        u32 raw{gpu_memory.Read<u32>(addr)};
++        if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
++                      std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
++            raw &= desc.mask;
++        }
++        return TexturePair(raw, via_header_index);
+     }};
+     const auto add_image{[&](const auto& desc, bool blacklist) {
+         for (u32 index = 0; index < desc.count; ++index) {
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 8b5b0bc9c..bc1250a28 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -377,23 +377,37 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
+         const auto read_handle{[&](const auto& desc, u32 index) {
+             ASSERT(cbufs[desc.cbuf_index].enabled);
+             const u32 index_offset{index << desc.size_shift};
+-            const u32 offset{desc.cbuf_offset + index_offset};
++            u32 offset{desc.cbuf_offset + index_offset};
++            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&>) {
++                if (desc.has_index_cbuf) {
++                    ASSERT(cbufs[desc.index_cbuf_index].enabled);
++                    offset += gpu_memory->Read<u32>(cbufs[desc.index_cbuf_index].address +
++                                                    desc.index_cbuf_offset)
++                              << desc.index_shift;
++                }
++            }
+             const GPUVAddr addr{cbufs[desc.cbuf_index].address + offset};
+             if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
+                           std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
+                 if (desc.has_secondary) {
+                     ASSERT(cbufs[desc.secondary_cbuf_index].enabled);
+-                    const u32 second_offset{desc.secondary_cbuf_offset + index_offset};
++                    const u32 second_offset{desc.secondary_cbuf_offset};
+                     const GPUVAddr separate_addr{cbufs[desc.secondary_cbuf_index].address +
+                                                  second_offset};
+-                    const u32 lhs_raw{gpu_memory->Read<u32>(addr) << desc.shift_left};
+-                    const u32 rhs_raw{gpu_memory->Read<u32>(separate_addr)
+-                                      << desc.secondary_shift_left};
++                    const u32 lhs_raw{(gpu_memory->Read<u32>(addr) << desc.shift_left) & desc.mask};
++                    const u32 rhs_raw{(gpu_memory->Read<u32>(separate_addr)
++                                       << desc.secondary_shift_left) &
++                                      desc.secondary_mask};
+                     const u32 raw{lhs_raw | rhs_raw};
+                     return TexturePair(raw, via_header_index);
+                 }
+             }
+-            return TexturePair(gpu_memory->Read<u32>(addr), via_header_index);
++            u32 raw{gpu_memory->Read<u32>(addr)};
++            if constexpr (std::is_same_v<decltype(desc), const Shader::TextureDescriptor&> ||
++                          std::is_same_v<decltype(desc), const Shader::TextureBufferDescriptor&>) {
++                raw &= desc.mask;
++            }
++            return TexturePair(raw, via_header_index);
+         }};
+         const auto add_image{[&](const auto& desc, bool blacklist) LAMBDA_FORCEINLINE {
+             for (u32 index = 0; index < desc.count; ++index) {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index f43bea122..1981603b4 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -596,6 +596,12 @@ void RasterizerVulkan::DispatchCompute() {
+         return;
+     }
+ 
++    const auto update_images_written_by_buffers = [this] {
++        buffer_cache.ForEachWrittenComputeStorageBuffer(
++            [this](auto& buffer, u32 offset, DAddr device_addr, u32 size) {
++                texture_cache.UpdateImagesFromBuffer(device_addr, size, buffer.Handle(), offset);
++            });
++    };
+     const auto& qmd{kepler_compute->launch_description};
+     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
+     if (indirect_address) {
+@@ -612,6 +618,7 @@ void RasterizerVulkan::DispatchCompute() {
+             }
+             cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
+         });
++        update_images_written_by_buffers();
+         return;
+     }
+     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+@@ -634,6 +641,7 @@ void RasterizerVulkan::DispatchCompute() {
+         }
+         cmdbuf.Dispatch(dim[0], dim[1], dim[2]);
+     });
++    update_images_written_by_buffers();
+ 
+     // Log compute dispatch
+     if (GPU::Logging::IsActive() &&
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 36e0857c8..ab82c3fc2 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -946,6 +946,8 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
+         astc_decoder_pass.emplace(device, scheduler, descriptor_pool, staging_buffer_pool,
+                                   compute_pass_descriptor_queue, memory_allocator);
+     }
++    bl2d_buffer_unswizzle_pass.emplace(device, scheduler, descriptor_pool, staging_buffer_pool,
++                                       compute_pass_descriptor_queue);
+     if (!device.IsKhrImageFormatListSupported()) {
+         return;
+     }
+@@ -2120,6 +2122,27 @@ void Image::UploadMemory(VkBuffer buffer, VkDeviceSize offset,
+     }
+ }
+ 
++bool Image::UploadSwizzledFromBuffer(VkBuffer buffer, VkDeviceSize offset) {
++    if (runtime == nullptr || !runtime->bl2d_buffer_unswizzle_pass || offset % 4 != 0 ||
++        guest_size_bytes > runtime->device.GetMaxStorageBufferRange() ||
++        !BlockLinearUnswizzle2DBufferPass::IsSupported(*this)) {
++        return false;
++    }
++    if (ENABLE_MSAA_RESOLVE_CONSUME) {
++        runtime->InvalidateResolveShadow(Handle());
++    }
++    auto [linear_buffer, copies] =
++        runtime->bl2d_buffer_unswizzle_pass->Unswizzle(*this, buffer, offset);
++    const VkImage vk_image = *original_image;
++    const VkImageAspectFlags vk_aspect_mask = aspect_mask;
++    const bool was_initialized = std::exchange(initialized, true);
++    scheduler->Record([linear_buffer, vk_image, vk_aspect_mask, was_initialized,
++                       copies = std::move(copies)](vk::CommandBuffer cmdbuf) {
++        CopyBufferToImage(cmdbuf, linear_buffer, vk_image, vk_aspect_mask, was_initialized, copies);
++    });
++    return true;
++}
++
+ void Image::UploadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
+     UploadMemory(map.buffer, map.offset, copies);
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index cdfe56ab0..2641f1fe6 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -164,6 +164,7 @@ public:
+     std::optional<ASTCDecoderPass> astc_decoder_pass;
+ 
+     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
++    std::optional<BlockLinearUnswizzle2DBufferPass> bl2d_buffer_unswizzle_pass;
+     const Settings::ResolutionScalingInfo& resolution;
+     std::array<std::vector<VkFormat>, VideoCore::Surface::MaxPixelFormat> view_formats;
+ 
+@@ -355,6 +356,10 @@ public:
+     void UploadMemory(const StagingBufferRef& map,
+                       std::span<const VideoCommon::BufferImageCopy> copies);
+ 
++    /// Replaces the image contents with its block linear guest data held in a GPU buffer.
++    /// Returns false when the image layout is not supported.
++    bool UploadSwizzledFromBuffer(VkBuffer buffer, VkDeviceSize offset);
++
+     void DownloadMemory(VkBuffer buffer, size_t offset,
+                         std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache_base.cpp b/src/video_core/renderer_vulkan/vk_texture_cache_base.cpp
+index 7e1c3a863..9b1ccd583 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache_base.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache_base.cpp
+@@ -1,3 +1,6 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+@@ -6,4 +9,6 @@
+ 
+ namespace VideoCommon {
+ template class VideoCommon::TextureCache<Vulkan::TextureCacheParams>;
++template void VideoCommon::TextureCache<Vulkan::TextureCacheParams>::UpdateImagesFromBuffer<VkBuffer>(
++    DAddr, size_t, VkBuffer, u64);
+ }
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 5dd866451..c3dce1d42 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -595,6 +595,36 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
+     });
+ }
+ 
++template <class P>
++template <typename BufferHandle>
++void TextureCache<P>::UpdateImagesFromBuffer(DAddr cpu_addr, size_t size, BufferHandle buffer,
++                                             u64 buffer_offset) {
++    if constexpr (requires(Image& image) { image.UploadSwizzledFromBuffer(buffer, buffer_offset); }) {
++        // The guest can write a render target through a storage buffer bound over its memory
++        // (e.g. a compute clear). Only images the binding matches exactly are replaced, a larger
++        // binding may hold unrelated live images in the parts the shader does not write.
++        static constexpr size_t MAX_BINDING_PADDING = 64 * 1024;
++        ForEachImageInRegion(cpu_addr, size, [&](ImageId image_id, Image& image) {
++            if (image.cpu_addr != cpu_addr || size < image.guest_size_bytes ||
++                size - image.guest_size_bytes > MAX_BINDING_PADDING ||
++                True(image.flags & ImageFlagBits::Remapped) ||
++                True(image.flags & ImageFlagBits::Sparse)) {
++                return;
++            }
++            if (!image.UploadSwizzledFromBuffer(buffer, buffer_offset)) {
++                return;
++            }
++            if (True(image.flags & ImageFlagBits::CpuModified)) {
++                image.flags &= ~ImageFlagBits::CpuModified;
++                if (False(image.flags & ImageFlagBits::Tracked)) {
++                    TrackImage(image, image_id);
++                }
++            }
++            MarkModification(image);
++        });
++    }
++}
++
+ template <class P>
+ bool TextureCache<P>::IsDownloadable(const ImageBase& image) const noexcept {
+     if (!image.IsSafeGpuCopy()) {
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 8a2318cc7..b42c0189c 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -203,6 +203,12 @@ public:
+     /// Mark images in a range as modified from the CPU
+     void WriteMemory(DAddr cpu_addr, size_t size);
+ 
++    /// Replaces the contents of the images fully inside a range that a GPU buffer wrote, with the
++    /// data of that buffer
++    template <typename BufferHandle>
++    void UpdateImagesFromBuffer(DAddr cpu_addr, size_t size, BufferHandle buffer,
++                                u64 buffer_offset);
++
+     /// Download contents of host images to guest memory in a region
+     void DownloadMemory(DAddr cpu_addr, size_t size);
+ 
+-- 
+2.43.0
+

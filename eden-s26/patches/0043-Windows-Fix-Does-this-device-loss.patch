@@ -1,0 +1,31 @@
+From 08f17320e0374daf1a472cba268fd7cae6d115d2 Mon Sep 17 00:00:00 2001
+From: John <john@eden-emu.dev>
+Date: Sun, 18 Oct 2026 03:06:45 +0200
+Subject: [PATCH 43/56] Windows Fix - Does this device loss?
+
+(cherry picked from commit b7ab1e06ad0692fbcd3d2d4791033744325c521b)
+---
+ src/video_core/renderer_vulkan/vk_texture_cache.cpp | 7 -------
+ 1 file changed, 7 deletions(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 7c9e7c07e..614fd90f5 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -1599,13 +1599,6 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
+     // As per the size-compatible formats section of vulkan, copy manually via ReinterpretImage
+     // these images that aren't size-compatible
+     if (BytesPerBlock(src.info.format) != BytesPerBlock(dst.info.format)) {
+-#ifdef _WIN32
+-        // On Windows, linear images cause device loss when used in image copies.
+-        // Tested with TitleID: 0x010067300059A00 (Mario + Rabbids Kingdom Battle)
+-        if (src.info.type == ImageType::Linear || dst.info.type == ImageType::Linear) {
+-            return;
+-        }
+-#endif
+         // Copy the whole image, clamped to the texels the source can provide. ReinterpretImage
+         // rescales the source width by the format ratio, so an unclamped destination-sized copy
+         // would read past the source image and fill destination rows out of order.
+-- 
+2.43.0
+

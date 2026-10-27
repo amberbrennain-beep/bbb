@@ -1,0 +1,241 @@
+From 8b50e6dbb2d6492df58d774d70ce5d37cd38f1e8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:53 +0000
+Subject: [PATCH 51/56] [android] Add a PGO profiling variant of the S26 flavor
+
+-PpgoGenerate=true instruments the build (YUZU_PGO_GENERATE); counters are
+written to <user>/pgo/eden-<pid>.profraw every two minutes and when a game
+stops, and Settings gains a Share profile data entry while such files
+exist. YUZU_PGO_USE takes the merged profile for the optimised build.
+---
+ CMakeLists.txt                                | 15 +++++++
+ src/android/app/build.gradle.kts              | 13 ++++--
+ .../fragments/HomeSettingsFragment.kt         | 43 +++++++++++++++++++
+ src/android/app/src/main/jni/native.cpp       | 42 ++++++++++++++++++
+ .../app/src/main/res/values/strings.xml       |  3 ++
+ 5 files changed, 113 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 320e701ba..436fb8f44 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -371,6 +371,21 @@ if (CXX_GCC OR CXX_CLANG)
+     endif()
+ endif()
+ 
++# Profile-guided optimisation
++option(YUZU_PGO_GENERATE "Instrument the build to collect a PGO profile" OFF)
++set(YUZU_PGO_USE "" CACHE FILEPATH "Merged .profdata file to optimise the build with")
++if (YUZU_PGO_GENERATE AND CXX_CLANG)
++    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fprofile-generate>)
++    add_link_options(-fprofile-generate)
++    add_compile_definitions(YUZU_PGO_GENERATE)
++elseif (NOT YUZU_PGO_USE STREQUAL "" AND CXX_CLANG)
++    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fprofile-use=${YUZU_PGO_USE}>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-profile-instr-out-of-date>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-profile-instr-unprofiled>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-profile-instr-missing>
++                        $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-backend-plugin>)
++endif()
++
+ # Configure C++ standard
+ # ===========================
+ 
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index 8706d15dd..a5bbf08d1 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -218,12 +218,16 @@ android {
+ 
+         // Tuned for the Galaxy S26 family (Snapdragon 8 Elite Gen 5 / Exynos 2600)
+         create("galaxyS26") {
++            // -PpgoGenerate=true builds the instrumented profiling variant
++            val pgoGenerate =
++                providers.gradleProperty("pgoGenerate").orNull?.toBooleanStrictOrNull() ?: false
++            val appName = if (pgoGenerate) "Eden S26 Profiling" else "Eden S26"
+             dimension = "version"
+             minSdk = 35
+-            manifestPlaceholders += mapOf("appNameBase" to "Eden S26")
+-            resValue("string", "app_name_suffixed", "Eden S26")
++            manifestPlaceholders += mapOf("appNameBase" to appName)
++            resValue("string", "app_name_suffixed", appName)
+             applicationId = "dev.eden.eden_emulator.s26"
+-            versionNameSuffix = "-s26"
++            versionNameSuffix = if (pgoGenerate) "-s26-profiling" else "-s26"
+ 
+             externalNativeBuild {
+                 cmake {
+@@ -237,6 +241,9 @@ android {
+                             "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O3 -DNDEBUG"
+                         )
+                     )
++                    if (pgoGenerate) {
++                        arguments.add("-DYUZU_PGO_GENERATE=ON")
++                    }
+                 }
+             }
+ 
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/HomeSettingsFragment.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/HomeSettingsFragment.kt
+index 2b4cfc5ca..7e8a4f5a2 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/HomeSettingsFragment.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/HomeSettingsFragment.kt
+@@ -41,11 +41,13 @@ import org.yuzu.yuzu_emu.model.DriverViewModel
+ import org.yuzu.yuzu_emu.model.HomeSetting
+ import org.yuzu.yuzu_emu.model.HomeViewModel
+ import org.yuzu.yuzu_emu.ui.main.MainActivity
++import org.yuzu.yuzu_emu.utils.DirectoryInitialization
+ import org.yuzu.yuzu_emu.utils.FileUtil
+ import org.yuzu.yuzu_emu.utils.GpuDriverHelper
+ import org.yuzu.yuzu_emu.utils.Log
+ import org.yuzu.yuzu_emu.utils.LosslessScalingHelper
+ import org.yuzu.yuzu_emu.utils.ViewUtils.updateMargins
++import java.io.File
+ 
+ class HomeSettingsFragment : Fragment() {
+     private var _binding: FragmentHomeSettingsBinding? = null
+@@ -304,6 +306,16 @@ class HomeSettingsFragment : Fragment() {
+                     { shareLog() }
+                 )
+             )
++            if (profileFiles().isNotEmpty()) {
++                add(
++                    HomeSetting(
++                        R.string.share_profile,
++                        R.string.share_profile_description,
++                        R.drawable.ic_log,
++                        { shareProfile() }
++                    )
++                )
++            }
+             add(
+                 HomeSetting(
+                     R.string.share_gpu_log,
+@@ -501,6 +513,37 @@ class HomeSettingsFragment : Fragment() {
+         }
+     }
+ 
++    // Profile counters written by profiling (PGO) builds, see native.cpp
++    private fun profileFiles(): List<File> {
++        val userDirectory = DirectoryInitialization.userDirectory ?: return emptyList()
++        return File(userDirectory, "pgo").listFiles { file -> file.name.endsWith(".profraw") }
++            ?.toList() ?: emptyList()
++    }
++
++    private fun shareProfile() {
++        val uris = ArrayList(
++            profileFiles().map {
++                DocumentsContract.buildDocumentUri(
++                    DocumentProvider.AUTHORITY,
++                    "${DocumentProvider.ROOT_ID}/pgo/${it.name}"
++                )
++            }
++        )
++        if (uris.isEmpty()) {
++            Toast.makeText(
++                requireContext(),
++                getText(R.string.share_profile_missing),
++                Toast.LENGTH_SHORT
++            ).show()
++            return
++        }
++        val intent = Intent(Intent.ACTION_SEND_MULTIPLE)
++            .setType("application/octet-stream")
++            .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
++            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
++        startActivity(Intent.createChooser(intent, getText(R.string.share_profile)))
++    }
++
+     private fun shareGpuLog() {
+         val currentLog = DocumentFile.fromSingleUri(
+             mainActivity,
+diff --git a/src/android/app/src/main/jni/native.cpp b/src/android/app/src/main/jni/native.cpp
+index d4f768993..f0c450253 100644
+--- a/src/android/app/src/main/jni/native.cpp
++++ b/src/android/app/src/main/jni/native.cpp
+@@ -20,6 +20,13 @@
+ #include <thread>
+ #include <vector>
+ #include <dlfcn.h>
++#ifdef YUZU_PGO_GENERATE
++#include <chrono>
++#include <mutex>
++#include <sys/stat.h>
++extern "C" int __llvm_profile_write_file(void);
++extern "C" void __llvm_profile_set_filename(const char*);
++#endif
+ #include <unistd.h>
+ 
+ #include <iostream>
+@@ -355,6 +362,35 @@ Core::SystemResultStatus EmulationSession::InitializeEmulation(const std::string
+     return Core::SystemResultStatus::Success;
+ }
+ 
++#ifdef YUZU_PGO_GENERATE
++namespace {
++std::mutex g_pgo_mutex;
++
++// Counters are cumulative per process; each process writes its own file, so rewrites never
++// double count.
++void WritePgoProfile() {
++    std::scoped_lock lock{g_pgo_mutex};
++    __llvm_profile_write_file();
++}
++
++void StartPgoProfile(const std::string& app_directory) {
++    static std::once_flag started;
++    std::call_once(started, [&] {
++        const std::string dir = app_directory + "/pgo";
++        mkdir(dir.c_str(), 0770);
++        static const std::string pattern = dir + "/eden-%p.profraw";
++        __llvm_profile_set_filename(pattern.c_str());
++        std::thread([] {
++            while (true) {
++                std::this_thread::sleep_for(std::chrono::minutes{2});
++                WritePgoProfile();
++            }
++        }).detach();
++    });
++}
++} // namespace
++#endif
++
+ void EmulationSession::ShutdownEmulation() {
+     std::scoped_lock lock(m_mutex);
+ 
+@@ -495,6 +531,9 @@ void EmulationSession::OnEmulationStarted() {
+ }
+ 
+ void EmulationSession::OnEmulationStopped(Core::SystemResultStatus result) {
++#ifdef YUZU_PGO_GENERATE
++    WritePgoProfile();
++#endif
+     JNIEnv* env = Common::Android::GetEnvForThread();
+     env->CallStaticVoidMethod(Common::Android::GetNativeLibraryClass(),
+                               Common::Android::GetOnEmulationStopped(), static_cast<jint>(result));
+@@ -765,6 +804,9 @@ void Java_org_yuzu_yuzu_1emu_NativeLibrary_surfaceDestroyed(JNIEnv* env, jobject
+ void Java_org_yuzu_yuzu_1emu_NativeLibrary_setAppDirectory(JNIEnv* env, jobject instance,
+                                                            [[maybe_unused]] jstring j_directory) {
+     Common::FS::SetAppDirectory(Common::Android::GetJString(env, j_directory));
++#ifdef YUZU_PGO_GENERATE
++    StartPgoProfile(Common::Android::GetJString(env, j_directory));
++#endif
+ }
+ 
+ int Java_org_yuzu_yuzu_1emu_NativeLibrary_installFileToNand(JNIEnv* env, jobject instance,
+diff --git a/src/android/app/src/main/res/values/strings.xml b/src/android/app/src/main/res/values/strings.xml
+index 191506c81..07dcb3a6f 100644
+--- a/src/android/app/src/main/res/values/strings.xml
++++ b/src/android/app/src/main/res/values/strings.xml
+@@ -406,6 +406,9 @@
+     <string name="firmware_uninstalled_failure">Firmware uninstallation failed</string>
+     <string name="share_log">Share debug logs</string>
+     <string name="share_log_description">Share Eden\'s log file to debug issues</string>
++    <string name="share_profile">Share profile data</string>
++    <string name="share_profile_description">Send the performance profile recorded by this profiling build</string>
++    <string name="share_profile_missing">No profile data yet. Play a game for a few minutes first.</string>
+     <string name="share_log_missing">No log file found</string>
+     <string name="share_gpu_log">Share GPU logs</string>
+     <string name="share_gpu_log_description">Share Eden\'s GPU log file to debug graphics issues</string>
+-- 
+2.43.0
+

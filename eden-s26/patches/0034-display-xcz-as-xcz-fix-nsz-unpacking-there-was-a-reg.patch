@@ -1,0 +1,132 @@
+From 2d22e33e28ca8af885d10da3241980f2e6c995bb Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Thu, 22 Oct 2026 20:38:22 +0300
+Subject: [PATCH 34/56] display xcz as xcz, fix nsz unpacking (there was a
+ regression in zstd)
+
+(cherry picked from commit 653b26ece6ff9e2681c7f40d2d8870041be14e89)
+---
+ cpmfile.json                           |  4 ++--
+ src/core/file_sys/registered_cache.cpp |  7 +++---
+ src/core/loader/loader.cpp             | 33 ++++++++++++++++++++------
+ src/core/loader/nsp.cpp                |  6 +++++
+ 4 files changed, 38 insertions(+), 12 deletions(-)
+
+diff --git a/cpmfile.json b/cpmfile.json
+index 9cac812b7..003273471 100644
+--- a/cpmfile.json
++++ b/cpmfile.json
+@@ -351,13 +351,13 @@
+     },
+     "zstd": {
+         "find_args": "MODULE",
+-        "hash": "cc5ad4b119a9c2ea57f0b71eeff01113bb506e0d17000159c5409cb8236d22e38c52d5e9e97e7947a4bf1b2dfc44b6c503ab2d9aedbd59458435c6a2849cb029",
++        "hash": "2b006c3c110c38bd2f5896b42d36a38931c8eae261f30552f9a9fd04458d218d8f1a1425f117fd12af545ed77042e4b2d1a1a9b6286c4d0b9d74ef79f20a8f08",
+         "min_version": "1.5",
+         "options": [
+             "ZSTD_BUILD_SHARED OFF"
+         ],
+         "repo": "facebook/zstd",
+         "source_subdir": "build/cmake",
+-        "version": "b8d6101fba"
++        "version": "33618c8"
+     }
+ }
+diff --git a/src/core/file_sys/registered_cache.cpp b/src/core/file_sys/registered_cache.cpp
+index cdc6811a2..26e73d260 100644
+--- a/src/core/file_sys/registered_cache.cpp
++++ b/src/core/file_sys/registered_cache.cpp
+@@ -1448,10 +1448,11 @@ void ExternalContentProvider::ScanDirectory(const VirtualDir& dir) {
+         }
+ 
+         const auto extension = Common::ToLower(filename.substr(dot_pos + 1));
+-
+-        if (extension == "nsp" || extension == "nsz") {
++        // .xcz is an XCI container, but its updates only work through the NSP/PFS0 path
++        // (DecompressNCZ), not ProcessXCI. So route .xcz here on purpose.
++        if (extension == "nsp" || extension == "nsz" || extension == "xcz") {
+             ProcessNSP(file);
+-        } else if (extension == "xci" || extension == "xcz") {
++        } else if (extension == "xci") {
+             ProcessXCI(file);
+         }
+     }
+diff --git a/src/core/loader/loader.cpp b/src/core/loader/loader.cpp
+index 48daf9c3f..92e2e2f60 100644
+--- a/src/core/loader/loader.cpp
++++ b/src/core/loader/loader.cpp
+@@ -89,16 +89,20 @@ std::shared_ptr<FileSys::NSP> OpenContainerAsNsp(FileSys::VirtualFile file, File
+ 
+     if (type == FileType::XCI || type == FileType::XCZ) {
+         FileSys::XCI xci{file, program_id, program_index};
+-        if (xci.GetStatus() != ResultStatus::Success) {
+-            return nullptr;
++        if (xci.GetStatus() == ResultStatus::Success) {
++            auto secure_nsp = xci.GetSecurePartitionNSP();
++            if (secure_nsp != nullptr && secure_nsp->GetStatus() == ResultStatus::Success) {
++                return secure_nsp;
++            }
+         }
+ 
+-        auto secure_nsp = xci.GetSecurePartitionNSP();
+-        if (secure_nsp == nullptr || secure_nsp->GetStatus() != ResultStatus::Success) {
+-            return nullptr;
++        // PFS0-shaped .xcz (NSZ-style container) does not parse as XCI; fall back to NSP.
++        if (type == FileType::XCZ) {
++            auto nsp = std::make_shared<FileSys::NSP>(file, program_id, program_index);
++            return nsp->GetStatus() == ResultStatus::Success ? nsp : nullptr;
+         }
+ 
+-        return secure_nsp;
++        return nullptr;
+     }
+ 
+     return nullptr;
+@@ -331,11 +335,26 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::V
+ 
+     // NX XCI (nX Card Image) file format.
+     case FileType::XCI:
+-    case FileType::XCZ:
+         return std::make_unique<AppLoader_XCI>(std::move(file), system.GetFileSystemController(),
+                                                system.GetContentProvider(), program_id,
+                                                program_index);
+ 
++    // NCZ-compressed XCI container. XCI-shaped .xcz goes to the XCI loader, while
++    // PFS0-shaped (NSZ-style) .xcz containers fall back to the NSP loader.
++    case FileType::XCZ: {
++        FileSys::XCI probe{file, program_id, program_index};
++        if (probe.GetStatus() == ResultStatus::Success &&
++            probe.GetSecurePartitionNSP() != nullptr) {
++            return std::make_unique<AppLoader_XCI>(std::move(file),
++                                                   system.GetFileSystemController(),
++                                                   system.GetContentProvider(), program_id,
++                                                   program_index);
++        }
++        return std::make_unique<AppLoader_NSP>(std::move(file), system.GetFileSystemController(),
++                                               system.GetContentProvider(), program_id,
++                                               program_index);
++    }
++
+     // NX NAX (NintendoAesXts) file format.
+     case FileType::NAX:
+         return std::make_unique<AppLoader_NAX>(std::move(file));
+diff --git a/src/core/loader/nsp.cpp b/src/core/loader/nsp.cpp
+index 3b9112642..8b2c79394 100644
+--- a/src/core/loader/nsp.cpp
++++ b/src/core/loader/nsp.cpp
+@@ -61,6 +61,12 @@ FileType AppLoader_NSP::IdentifyType(const FileSys::VirtualFile& nsp_file) {
+         return FileType::NSZ;
+     }
+ 
++    // PFS0-shaped .xcz containers are handled by this loader too; report XCZ so the game
++    // list does not show them as NSP. XCI-shaped .xcz is identified by AppLoader_XCI.
++    if (nsp_file->GetName().ends_with(".xcz")) {
++        return FileType::XCZ;
++    }
++
+     const FileSys::NSP nsp(nsp_file);
+ 
+     if (nsp.GetStatus() != ResultStatus::Success) {
+-- 
+2.43.0
+

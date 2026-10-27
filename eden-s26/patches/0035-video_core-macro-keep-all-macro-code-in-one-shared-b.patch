@@ -1,0 +1,245 @@
+From d6dc03bda09f084141e1ff16bf0edd9cf0b0e7d0 Mon Sep 17 00:00:00 2001
+From: simply0001 <nicolas.tobago@icloud.com>
+Date: Thu, 6 Aug 2026 02:25:02 +0200
+Subject: [PATCH 35/56] [video_core/macro] keep all macro code in one shared
+ buffer
+
+Every macro upload got its own heap vector inside a map, and calling into the middle of a blob copied the whole tail into yet another vector before compiling, where the std::move doesn't save the allocation since dynamically sized vectors can't elide the heap. Now all uploaded words land in a single append-only vector and each method just records a start/size pair into it, so a mid-method call becomes a plain offset entry with no copy at all. Spans are only materialized at the point of use, because a stored span would dangle whenever the shared vector grows on append.
+
+The interpreter also copied its parameters into a member vector on every execution; it now reads the caller's span directly, which is the same contract the JIT always had. Macro upload bursts used to go word by word through CallMethod, paying the shadow RAM check, the dirty table stores and the method switch per word, so CallMultiMethod now handles load_mme.instruction in bulk like const_buffer and inline_data already do. ProcessMacroUpload is gone since nothing calls it and its instruction_ptr++ contradicted the live upload path.
+
+Also fixes the dump suffix, the decompiled flag was always true so LLE macros were dumped with the jit label.
+
+Continues the macro work from #4236.
+
+(cherry picked from commit ac0279684f29fbd91fbb7d824b9edb319970762b)
+---
+ src/video_core/engines/maxwell_3d.cpp |  7 ++--
+ src/video_core/engines/maxwell_3d.h   |  3 --
+ src/video_core/macro.cpp              | 57 +++++++++++++++++----------
+ src/video_core/macro.h                | 24 +++++++----
+ 4 files changed, 56 insertions(+), 35 deletions(-)
+
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index e7da9d913..687ccf8a9 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -436,6 +436,9 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
+         upload_state.ProcessData(base_start, amount);
+         return;
+     }
++    case MAXWELL3D_REG_INDEX(load_mme.instruction):
++        macro_engine.AddCode(regs.load_mme.instruction_ptr, base_start, amount);
++        break;
+     case MAXWELL3D_REG_INDEX(draw_inline_index):
+     case MAXWELL3D_REG_INDEX(inline_index_2x16.even):
+     case MAXWELL3D_REG_INDEX(inline_index_4x8.index0):
+@@ -452,10 +455,6 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
+     }
+ }
+ 
+-void Maxwell3D::ProcessMacroUpload(u32 data) {
+-    macro_engine.AddCode(regs.load_mme.instruction_ptr++, data);
+-}
+-
+ void Maxwell3D::ProcessMacroBind(u32 data) {
+     macro_positions[regs.load_mme.start_address_ptr++] = data;
+ }
+diff --git a/src/video_core/engines/maxwell_3d.h b/src/video_core/engines/maxwell_3d.h
+index 0cab2ae98..fb8ed9133 100644
+--- a/src/video_core/engines/maxwell_3d.h
++++ b/src/video_core/engines/maxwell_3d.h
+@@ -3223,9 +3223,6 @@ private:
+      */
+     void CallMacroMethod(Core::System& system, u32 method, const std::vector<u32>& parameters);
+ 
+-    /// Handles writes to the macro uploading register.
+-    void ProcessMacroUpload(u32 data);
+-
+     /// Handles writes to the macro bind register.
+     void ProcessMacroBind(u32 data);
+ 
+diff --git a/src/video_core/macro.cpp b/src/video_core/macro.cpp
+index 86f528af1..ea98be6d3 100644
+--- a/src/video_core/macro.cpp
++++ b/src/video_core/macro.cpp
+@@ -421,9 +421,9 @@ void HLE_TransformFeedbackSetup::Execute(Core::System& system, Engines::Maxwell3
+ void MacroInterpreterImpl::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> params, u32 method) {
+     Reset();
+ 
++    code = std::span(*storage).subspan(code_start, code_size);
++    parameters = params;
+     registers[1] = params[0];
+-    parameters.resize(params.size());
+-    std::memcpy(parameters.data(), params.data(), params.size() * sizeof(u32));
+ 
+     // Execute the code until we hit an exit condition.
+     bool keep_executing = true;
+@@ -441,7 +441,6 @@ void MacroInterpreterImpl::Reset() {
+     pc = 0;
+     delayed_pc = {};
+     method_address.raw = 0;
+-    // Vector must hold its last indices otherwise chaos will ensue
+     // The next parameter index starts at 1, because $r1 already has the value of the first
+     // parameter.
+     next_parameter_index = 1;
+@@ -1337,6 +1336,20 @@ static void Dump(u64 hash, std::span<const u32> code, bool decompiled = false) {
+     macro_file.write(reinterpret_cast<const char*>(code.data()), code.size_bytes());
+ }
+ 
++void MacroEngine::AddCode(u32 method, const u32* data, u32 amount) {
++    auto& range = uploaded_macro_ranges[method];
++    const u32 tail = static_cast<u32>(macro_code.size());
++    if (range.start + range.size != tail) {
++        macro_code.reserve(size_t(tail) + range.size + amount);
++        for (u32 i = 0; i < range.size; i++) {
++            macro_code.push_back(macro_code[range.start + i]);
++        }
++        range.start = tail;
++    }
++    macro_code.insert(macro_code.end(), data, data + amount);
++    range.size += amount;
++}
++
+ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method,
+                           std::span<const u32> parameters) {
+     const auto execute_variant = [&system, &maxwell3d, &parameters,
+@@ -1384,12 +1397,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+     }
+ 
+     // Macro not compiled, check if it's uploaded and if so, compile it
+-    std::span<const u32> code;
+-    auto macro_code = uploaded_macro_code.find(method);
+-    if (macro_code == uploaded_macro_code.end()) {
++    CodeRange range;
++    auto uploaded = uploaded_macro_ranges.find(method);
++    if (uploaded == uploaded_macro_ranges.end()) {
+         std::optional<u32> mid_method;
+-        for (const auto& [method_base, uploaded_code] : uploaded_macro_code) {
+-            if (method >= method_base && (method - method_base) < uploaded_code.size()) {
++        for (const auto& [method_base, base_range] : uploaded_macro_ranges) {
++            if (method >= method_base && (method - method_base) < base_range.size) {
+                 mid_method = method_base;
+                 break;
+             }
+@@ -1399,39 +1412,41 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+             return;
+         }
+ 
+-        const auto source = uploaded_macro_code.find(*mid_method);
+-        ASSERT(source != uploaded_macro_code.end());
++        const auto source = uploaded_macro_ranges.find(*mid_method);
++        ASSERT(source != uploaded_macro_ranges.end());
+         const auto rebased_method = method - *mid_method;
+-        std::vector<u32> rebased_code(source->second.begin() + rebased_method,
+-                                      source->second.end());
+-        const auto [it, inserted] = uploaded_macro_code.emplace(method, std::move(rebased_code));
++        range = CodeRange{source->second.start + rebased_method,
++                          source->second.size - rebased_method};
++        const auto [it, inserted] = uploaded_macro_ranges.emplace(method, range);
+         ASSERT(inserted);
+-        code = it->second;
+     } else {
+-        code = macro_code->second;
++        range = uploaded->second;
+     }
++    const auto code = std::span(macro_code).subspan(range.start, range.size);
+ 
+     auto& ci = macro_cache[method];
+     ci.hash = Common::HashRange(code.begin(), code.end());
+     if (!Settings::values.disable_macro_hle) {
+         ci.program = GetHLEProgram(ci.hash);
+     }
+-    if (std::holds_alternative<std::monostate>(ci.program)) {
+-        ci.program = Compile(system, maxwell3d, code);
++    const bool is_hle = !std::holds_alternative<std::monostate>(ci.program);
++    if (!is_hle) {
++        ci.program = Compile(system, range);
+     }
+ 
+     execute_variant(ci.program);
+     if (Settings::values.dump_macros) {
+-        Dump(ci.hash, code, !std::holds_alternative<std::monostate>(ci.program));
++        Dump(ci.hash, code, is_hle);
+     }
+ }
+ 
+-AnyCachedMacro MacroEngine::Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code) {
++AnyCachedMacro MacroEngine::Compile(Core::System& system, CodeRange range) {
+ #ifdef ARCHITECTURE_x86_64
+     if (!is_interpreted)
+-        return std::make_unique<MacroJITx64Impl>(system, code);
++        return std::make_unique<MacroJITx64Impl>(system,
++                                                 std::span(macro_code).subspan(range.start, range.size));
+ #endif
+-    return MacroInterpreterImpl(code);
++    return MacroInterpreterImpl(macro_code, range.start, range.size);
+ }
+ 
+ } // namespace Tegra
+diff --git a/src/video_core/macro.h b/src/video_core/macro.h
+index 90519a542..12269e041 100644
+--- a/src/video_core/macro.h
++++ b/src/video_core/macro.h
+@@ -159,7 +159,8 @@ struct HLE_TransformFeedbackSetup final {
+ };
+ struct MacroInterpreterImpl final {
+     MacroInterpreterImpl() {}
+-    MacroInterpreterImpl(std::span<const u32> code_) : code{code_} {}
++    MacroInterpreterImpl(const std::vector<u32>& storage_, u32 code_start_, u32 code_size_)
++        : storage{&storage_}, code_start{code_start_}, code_size{code_size_} {}
+     void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> params, u32 method);
+     void Reset();
+     bool Step(Core::System& system, Engines::Maxwell3D& maxwell3d, bool is_delay_slot);
+@@ -179,8 +180,11 @@ struct MacroInterpreterImpl final {
+     /// General purpose macro registers.
+     std::array<u32, Macro::NUM_MACRO_REGISTERS> registers = {};
+     /// Input parameters of the current macro.
+-    std::vector<u32> parameters;
++    std::span<const u32> parameters;
+     std::span<const u32> code;
++    const std::vector<u32>* storage = nullptr;
++    u32 code_start = 0;
++    u32 code_size = 0;
+     /// Program counter to execute at after the delay slot is executed.
+     std::optional<u32> delayed_pc;
+     /// Method address to use for the next Send instruction.
+@@ -221,24 +225,30 @@ using AnyCachedMacro = std::variant<
+ 
+ struct MacroEngine {
+     MacroEngine(bool is_interpreted_) noexcept : is_interpreted{is_interpreted_} {}
++    struct CodeRange {
++        u32 start = 0;
++        u32 size = 0;
++    };
+     // Store the uploaded macro code to compile them when they're called.
+-    inline void AddCode(u32 method, u32 data) noexcept {
+-        uploaded_macro_code[method].push_back(data);
++    void AddCode(u32 method, const u32* data, u32 amount);
++    inline void AddCode(u32 method, u32 data) {
++        AddCode(method, &data, 1);
+     }
+     // Clear the code associated with a method.
+     inline void ClearCode(u32 method) noexcept {
+         macro_cache.erase(method);
+-        uploaded_macro_code.erase(method);
++        uploaded_macro_ranges.erase(method);
+     }
+     // Compiles the macro if its not in the cache, and executes the compiled macro
+     void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method, std::span<const u32> parameters);
+-    AnyCachedMacro Compile(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> code);
++    AnyCachedMacro Compile(Core::System& system, CodeRange range);
+     struct CacheInfo {
+         AnyCachedMacro program;
+         u64 hash{};
+     };
+     ::Common::unordered_map<u32, CacheInfo> macro_cache;
+-    ::Common::unordered_map<u32, std::vector<u32>> uploaded_macro_code;
++    std::vector<u32> macro_code;
++    ::Common::unordered_map<u32, CodeRange> uploaded_macro_ranges;
+     bool is_interpreted;
+ };
+ 
+-- 
+2.43.0
+

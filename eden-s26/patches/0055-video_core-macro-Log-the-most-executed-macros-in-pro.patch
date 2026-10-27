@@ -1,0 +1,104 @@
+From c68f931a9cd8dba28d12421fe1c986b6f2dbd1e2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:54 +0000
+Subject: [PATCH 55/56] [video_core/macro] Log the most executed macros in
+ profiling builds
+
+With YUZU_PGO_GENERATE, count calls per cached macro and periodically log
+the top entries (hash, calls, HLE or interpreted) plus the code of the
+hottest interpreted ones, to choose new HLE implementations.
+---
+ src/video_core/macro.cpp | 41 ++++++++++++++++++++++++++++++++++++++++
+ src/video_core/macro.h   |  9 +++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/src/video_core/macro.cpp b/src/video_core/macro.cpp
+index d3175b544..da0c8857a 100644
+--- a/src/video_core/macro.cpp
++++ b/src/video_core/macro.cpp
+@@ -4,6 +4,7 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <cstring>
+ #include <fstream>
+ #include <optional>
+@@ -1376,6 +1377,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+             cached);
+     };
+     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
++#ifdef YUZU_PGO_GENERATE
++        ++it->second.calls;
++        if (++total_calls % 2'000'000 == 0) {
++            LogMacroStats();
++        }
++#endif
+         execute_variant(it->second.program);
+         return;
+     }
+@@ -1424,6 +1431,40 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
+     }
+ }
+ 
++#ifdef YUZU_PGO_GENERATE
++void MacroEngine::LogMacroStats() {
++    std::vector<std::pair<u32, const CacheInfo*>> entries;
++    entries.reserve(macro_cache.size());
++    for (const auto& [method, info] : macro_cache) {
++        entries.emplace_back(method, &info);
++    }
++    std::sort(entries.begin(), entries.end(),
++              [](const auto& a, const auto& b) { return a.second->calls > b.second->calls; });
++    LOG_INFO(HW_GPU, "MacroStats: {} macro calls, {} cached macros", total_calls, entries.size());
++    for (size_t i = 0; i < (std::min)(entries.size(), size_t{16}); ++i) {
++        const auto& [method, info] = entries[i];
++        const bool interpreted = std::holds_alternative<MacroInterpreterImpl>(info->program) ||
++                                 std::holds_alternative<std::unique_ptr<DynamicCachedMacro>>(info->program);
++        LOG_INFO(HW_GPU, "MacroStats: #{} hash={:016X} calls={} {}", i, info->hash, info->calls,
++                 interpreted ? "interpreted" : "HLE");
++        if (!interpreted || logged_code.contains(info->hash)) {
++            continue;
++        }
++        logged_code.emplace(info->hash, true);
++        const auto range = uploaded_macro_ranges.find(method);
++        if (range == uploaded_macro_ranges.end()) {
++            continue;
++        }
++        const auto code = std::span(macro_code).subspan(range->second.start, range->second.size);
++        std::string hex;
++        for (const u32 word : code) {
++            hex += fmt::format("{:08X} ", word);
++        }
++        LOG_INFO(HW_GPU, "MacroCode: hash={:016X} words={} code={}", info->hash, code.size(), hex);
++    }
++}
++#endif
++
+ AnyCachedMacro MacroEngine::Compile(Core::System& system, CodeRange range) {
+ #ifdef ARCHITECTURE_x86_64
+     if (!is_interpreted)
+diff --git a/src/video_core/macro.h b/src/video_core/macro.h
+index 12269e041..c9ad43f36 100644
+--- a/src/video_core/macro.h
++++ b/src/video_core/macro.h
+@@ -245,7 +245,16 @@ struct MacroEngine {
+     struct CacheInfo {
+         AnyCachedMacro program;
+         u64 hash{};
++#ifdef YUZU_PGO_GENERATE
++        u64 calls{};
++#endif
+     };
++#ifdef YUZU_PGO_GENERATE
++    // Profiling builds log the most executed macros, to pick candidates for HLE
++    void LogMacroStats();
++    u64 total_calls{};
++    ::Common::unordered_map<u64, bool> logged_code;
++#endif
+     ::Common::unordered_map<u32, CacheInfo> macro_cache;
+     std::vector<u32> macro_code;
+     ::Common::unordered_map<u32, CodeRange> uploaded_macro_ranges;
+-- 
+2.43.0
+

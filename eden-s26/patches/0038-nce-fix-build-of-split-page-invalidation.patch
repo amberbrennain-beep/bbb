@@ -1,0 +1,39 @@
+From c7458989a6e0c5594a6a57f2bb7b1b00d5eba5b3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:51 +0000
+Subject: [PATCH 38/56] [nce] fix build of split page invalidation
+
+---
+ src/core/arm/nce/arm_nce.cpp | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/arm/nce/arm_nce.cpp b/src/core/arm/nce/arm_nce.cpp
+index e7ea41d36..77463a2e0 100644
+--- a/src/core/arm/nce/arm_nce.cpp
++++ b/src/core/arm/nce/arm_nce.cpp
+@@ -169,12 +169,12 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
+     auto& memory = guest_ctx->parent->m_running_thread->GetOwnerProcess()->GetMemory();
+ 
+     // Try to handle an invalid access.
+-    if (pageoff > YUZU_PAGESIZE - MAX_SIZE) {
++    if (pageoff > Memory::YUZU_PAGESIZE - MAX_SIZE) {
+         // The access may or may not have spanned two pages, let's invalidate two
+ 
+         // Either way, we won't check if the 2nd page succeeded as there is a (very small) chance
+         // that this page is correctly invalid and this access only spanned one page.
+-        memory.InvalidateNCE(page_start + Memory::YUZU_PAGESIZE);
++        memory.InvalidateNCE(page_start + Memory::YUZU_PAGESIZE, Memory::YUZU_PAGESIZE);
+         if (memory.InvalidateNCE(page_start, Memory::YUZU_PAGESIZE)) {
+             // We handled the access successfully and are returning to guest code.
+             return true;
+@@ -186,7 +186,6 @@ bool ArmNce::HandleGuestAccessFault(GuestContext* guest_ctx, void* raw_info, voi
+         }
+     }
+ 
+-
+     // We couldn't handle the access.
+     return HandleFailedGuestFault(guest_ctx, raw_info, raw_context);
+ }
+-- 
+2.43.0
+

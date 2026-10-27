@@ -1,0 +1,55 @@
+From 51c8bc07c25173fa19174af8e7553f3dc7edc9fd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:52 +0000
+Subject: [PATCH 46/56] =?UTF-8?q?[core]=20Pok=C3=A9mon=20Legends=20Z-A:=20?=
+ =?UTF-8?q?default=20to=20Balanced=20GPU=20fence=20behaviour?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Immediate fence signalling makes textures and shadows flicker in this
+title. Apply the delayed (anti-flicker) behaviour for the session when
+the user has left GPU Fence Behavior on Default.
+---
+ src/core/game_settings.cpp | 10 ++++++++++
+ src/core/game_settings.h   |  3 ++-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/game_settings.cpp b/src/core/game_settings.cpp
+index 745eae190..5492c59a5 100644
+--- a/src/core/game_settings.cpp
++++ b/src/core/game_settings.cpp
+@@ -126,6 +126,16 @@ void LoadOverrides(std::uint64_t program_id, const VideoCore::RendererBase& rend
+         case TitleID::NinjaGaidenRagebound:
+             Settings::values.use_squashed_iterated_blend = true;
+             break;
++        case TitleID::PokemonLegendsZA:
++            // Immediate fence signalling makes textures and shadows flicker in this game. Use the
++            // delayed ("Balanced") behaviour for this session unless the user picked one explicitly.
++            if (Settings::values.gpu_fence_behavior.UsingGlobal() &&
++                Settings::values.gpu_fence_behavior.GetValue() ==
++                    Settings::GpuFenceBehavior::Default) {
++                Settings::values.gpu_fence_behavior.SetGlobal(false);
++                Settings::values.gpu_fence_behavior.SetValue(Settings::GpuFenceBehavior::Balanced);
++            }
++            break;
+         default:
+             break;
+     }
+diff --git a/src/core/game_settings.h b/src/core/game_settings.h
+index 327a1a4e2..8cd5a85ac 100644
+--- a/src/core/game_settings.h
++++ b/src/core/game_settings.h
+@@ -44,7 +44,8 @@ enum class GPUVendor {
+ };
+ 
+ enum class TitleID : std::uint64_t {
+-    NinjaGaidenRagebound = 0x0100781020710000ULL
++    NinjaGaidenRagebound = 0x0100781020710000ULL,
++    PokemonLegendsZA = 0x0100F43008C44000ULL,
+ };
+ 
+ struct EnvironmentInfo {
+-- 
+2.43.0
+

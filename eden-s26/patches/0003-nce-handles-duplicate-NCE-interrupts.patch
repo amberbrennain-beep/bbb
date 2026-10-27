@@ -1,0 +1,28 @@
+From 2a02f48ce1d278a768f0b122c423e39a66a1f6a3 Mon Sep 17 00:00:00 2001
+From: xbzk <xbzk@eden-emu.dev>
+Date: Tue, 13 Oct 2026 22:23:46 -0300
+Subject: [PATCH 03/56] [nce] handles duplicate NCE interrupts
+
+(cherry picked from commit a9b95c2f2013bb61ce23debc74ca379e5367f921)
+---
+ src/core/arm/nce/arm_nce.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/arm/nce/arm_nce.cpp b/src/core/arm/nce/arm_nce.cpp
+index 63d5638fc..438dd4d98 100644
+--- a/src/core/arm/nce/arm_nce.cpp
++++ b/src/core/arm/nce/arm_nce.cpp
+@@ -369,8 +369,8 @@ void ArmNce::SetContext(const Kernel::Svc::ThreadContext& ctx) {
+ }
+ 
+ void ArmNce::SignalInterrupt(Kernel::KThread* thread) {
+-    // Add break loop condition.
+-    m_guest_ctx.esr_el1.fetch_or(static_cast<u64>(HaltReason::BreakLoop));
++    constexpr u64 break_loop = static_cast<u64>(HaltReason::BreakLoop);
++    if ((m_guest_ctx.esr_el1.fetch_or(break_loop) & break_loop) != 0) return;
+ 
+     auto* params = &thread->GetNativeExecutionParameters();
+     LockThreadParameters(params);
+-- 
+2.43.0
+

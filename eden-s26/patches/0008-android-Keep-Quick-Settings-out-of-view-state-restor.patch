@@ -1,0 +1,47 @@
+From 5ef2e6fa3fe58f4c53fff05d973a080a8a00c34f Mon Sep 17 00:00:00 2001
+From: mleo2003 <mleo2003@gmail.com>
+Date: Tue, 20 Oct 2026 21:49:05 -0700
+Subject: [PATCH 08/56] [android] Keep Quick Settings out of view-state restore
+
+All Quick Settings switches share one id, so restoring view state after a
+recreation flipped them and their listeners saved the per-game config after
+it was unloaded. Also make savePerGameConfig() a no-op when no per-game
+config is loaded.
+
+Assisted-by: Claude Opus 5.5 (debugging, patch drafting)
+Signed-off-by: mleo2003 <mleo2003@gmail.com>
+(cherry picked from commit 606bcd5129cce4628438f02c33b3955168f741e0)
+---
+ .../main/java/org/yuzu/yuzu_emu/fragments/EmulationFragment.kt | 1 +
+ src/android/app/src/main/jni/native_config.cpp                 | 3 +++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/EmulationFragment.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/EmulationFragment.kt
+index 3323b3cf9..e7f1ad0aa 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/EmulationFragment.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/fragments/EmulationFragment.kt
+@@ -1124,6 +1124,7 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback {
+             val container = binding.quickSettingsSheet.findViewById<ViewGroup>(R.id.quick_settings_container)
+             val isSharpnessFilterSelected = isSharpnessScalingFilterSelected()
+ 
++            container.isSaveFromParentEnabled = false
+             container.removeAllViews()
+ 
+             if (shouldUseCustom) {
+diff --git a/src/android/app/src/main/jni/native_config.cpp b/src/android/app/src/main/jni/native_config.cpp
+index 1b8e34398..7d8a268f9 100644
+--- a/src/android/app/src/main/jni/native_config.cpp
++++ b/src/android/app/src/main/jni/native_config.cpp
+@@ -83,6 +83,9 @@ jboolean Java_org_yuzu_yuzu_1emu_utils_NativeConfig_isPerGameConfigLoaded(JNIEnv
+ }
+ 
+ void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_savePerGameConfig(JNIEnv* env, jobject obj) {
++    if (per_game_config == nullptr) {
++        return;
++    }
+     per_game_config->AndroidConfig::SaveAllValues();
+ }
+ 
+-- 
+2.43.0
+

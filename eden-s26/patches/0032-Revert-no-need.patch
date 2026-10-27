@@ -1,0 +1,44 @@
+From 9f434b50010ba0c46cfeaa02413e48c67725df99 Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Wed, 21 Oct 2026 00:47:53 +0300
+Subject: [PATCH 32/56] Revert "no need"
+
+This reverts commit ea68a544cb36210157ac39069f7ffb215ba1b4f8.
+
+(cherry picked from commit 43e16573ab52d43841acf521b5b61c69f4bea56d)
+---
+ src/core/file_sys/registered_cache.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/core/file_sys/registered_cache.cpp b/src/core/file_sys/registered_cache.cpp
+index ea8a3b1a5..efd40fb5e 100644
+--- a/src/core/file_sys/registered_cache.cpp
++++ b/src/core/file_sys/registered_cache.cpp
+@@ -1467,6 +1467,12 @@ void ExternalContentProvider::ProcessNSP(const VirtualFile& file) {
+         return;
+     }
+ 
++    // Reject solid NCZ (.nsz without -B): Eden only supports block-compressed NCZ.
++    if (!ContainerIsFullyBlockCompressed(nsp)) {
++        LOG_DEBUG(Service_FS, "Skipping solid-compressed container: {}", file->GetName());
++        return;
++    }
++
+     LOG_DEBUG(Service_FS, "Processing NSP file: {}", file->GetName());
+     AddExternalEntriesFromContainer(nsp, entries, versions, multi_version_entries);
+ }
+@@ -1477,6 +1483,11 @@ void ExternalContentProvider::ProcessXCI(const VirtualFile& file) {
+         return;
+     }
+ 
++    if (!ContainerIsFullyBlockCompressed(nsp)) {
++        LOG_DEBUG(Service_FS, "Skipping solid-compressed container: {}", file->GetName());
++        return;
++    }
++
+     AddExternalEntriesFromContainer(nsp, entries, versions, multi_version_entries);
+ }
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,26 @@
+From ef0ca0f9c1306ae8e5e18da034689668a602d93c Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Mon, 19 Oct 2026 06:19:36 +0300
+Subject: [PATCH 28/56] fix
+
+(cherry picked from commit 516d95513b95bb286fb885a813d74ddbeeb35edc)
+---
+ src/core/loader/nsp.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/loader/nsp.cpp b/src/core/loader/nsp.cpp
+index 7081798d9..b90629983 100644
+--- a/src/core/loader/nsp.cpp
++++ b/src/core/loader/nsp.cpp
+@@ -57,7 +57,7 @@ AppLoader_NSP::AppLoader_NSP(FileSys::VirtualFile file_,
+ AppLoader_NSP::~AppLoader_NSP() = default;
+ 
+ FileType AppLoader_NSP::IdentifyType(const FileSys::VirtualFile& nsp_file) {
+-
++    const auto name = Common::ToLower(nsp_file->GetName());
+     // .nsz is NSP-compatible; return NSZ so the game list shows the right type.
+     if (name.ends_with(".nsz")) {
+         return FileType::NSZ;
+-- 
+2.43.0
+

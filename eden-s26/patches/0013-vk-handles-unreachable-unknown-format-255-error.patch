@@ -1,0 +1,34 @@
+From 77785967c6af175397d25723e4f59335de50d33a Mon Sep 17 00:00:00 2001
+From: xbzk <xbzk@eden-emu.dev>
+Date: Tue, 13 Oct 2026 22:11:51 -0300
+Subject: [PATCH 13/56] [vk] handles unreachable unknown format 255 error
+
+(cherry picked from commit 6db5cad29c8044413c9cb96b7b5bf60bb202775b)
+---
+ src/video_core/renderer_vulkan/vk_buffer_cache.h | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index fff1f8164..b8840c168 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -219,9 +219,13 @@ public:
+ 
+     void BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
+                            VideoCore::Surface::PixelFormat format) {
+-        guest_descriptor_queue.AddTexelBuffer(buffer.View(offset, size, format),
+-                                              buffer.DeviceAddress(), offset, size,
+-                                              TexelBufferFormat(format));
++        if (guest_descriptor_queue.UsesDescriptorBuffer()) {
++            const VkDeviceAddress address = buffer.DeviceAddress();
++            const VkFormat vk_format = address == 0 ? VK_FORMAT_UNDEFINED : TexelBufferFormat(format);
++            guest_descriptor_queue.AddTexelBuffer(VK_NULL_HANDLE, address, offset, size, vk_format);
++        } else {
++            guest_descriptor_queue.AddTexelBuffer(buffer.View(offset, size, format));
++        }
+     }
+ 
+     bool ShouldLimitDynamicStorageBuffers() const {
+-- 
+2.43.0
+

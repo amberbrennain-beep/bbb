@@ -1,0 +1,58 @@
+From bf5cf03fee5b5556633a64727bbfd141b2a6ac95 Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Tue, 20 Oct 2026 02:10:15 +0300
+Subject: [PATCH 30/56] more
+
+(cherry picked from commit e15f2bf66b0805b841ec958354b0bd52534daceb)
+---
+ src/android/app/src/main/jni/game_metadata.cpp |  4 +++-
+ src/yuzu/main_window.cpp                       | 11 +++++++----
+ 2 files changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/src/android/app/src/main/jni/game_metadata.cpp b/src/android/app/src/main/jni/game_metadata.cpp
+index 49d92bca7..9b6cd44e9 100644
+--- a/src/android/app/src/main/jni/game_metadata.cpp
++++ b/src/android/app/src/main/jni/game_metadata.cpp
+@@ -76,7 +76,9 @@ jboolean Java_org_yuzu_yuzu_1emu_utils_GameMetadata_getIsValid(JNIEnv* env, jobj
+             auto const file_type = loader->GetFileType();
+             if (file_type == Loader::FileType::Unknown || file_type == Loader::FileType::Error)
+                 return false;
+-            if ((file_type == Loader::FileType::NSP || file_type == Loader::FileType::XCI) && !Loader::IsBootableGameContainer(file, file_type))
++            if ((file_type == Loader::FileType::NSP || file_type == Loader::FileType::XCI ||
++                 file_type == Loader::FileType::NSZ || file_type == Loader::FileType::XCZ) &&
++                !Loader::IsBootableGameContainer(file, file_type))
+                 return false;
+             u64 program_id = 0;
+             return loader->ReadProgramId(program_id) == Loader::ResultStatus::Success;
+diff --git a/src/yuzu/main_window.cpp b/src/yuzu/main_window.cpp
+index 6e21265f9..ad76e5b2d 100644
+--- a/src/yuzu/main_window.cpp
++++ b/src/yuzu/main_window.cpp
+@@ -2797,9 +2797,9 @@ void MainWindow::IncrementInstallProgress() {
+ 
+ void MainWindow::OnMenuInstallToNAND() {
+     const QString file_filter =
+-        tr("Installable Switch File (*.nca *.nsp *.xci);;Nintendo Content Archive "
+-           "(*.nca);;Nintendo Submission Package (*.nsp);;NX Cartridge "
+-           "Image (*.xci)");
++        tr("Installable Switch File (*.nca *.nsp *.nsz *.xci *.xcz);;Nintendo Content Archive "
++           "(*.nca);;Nintendo Submission Package (*.nsp *.nsz);;NX Cartridge "
++           "Image (*.xci *.xcz)");
+ 
+     QStringList filenames = QFileDialog::getOpenFileNames(
+         this, tr("Install Files"), QString::fromStdString(UISettings::values.roms_path),
+@@ -2856,7 +2856,10 @@ void MainWindow::OnMenuInstallToNAND() {
+         QFuture<ContentManager::InstallResult> future;
+         ContentManager::InstallResult result;
+ 
+-        if (file.endsWith(QStringLiteral("nsp"), Qt::CaseInsensitive)) {
++        if (file.endsWith(QStringLiteral("nsp"), Qt::CaseInsensitive) ||
++            file.endsWith(QStringLiteral("nsz"), Qt::CaseInsensitive) ||
++            file.endsWith(QStringLiteral("xci"), Qt::CaseInsensitive) ||
++            file.endsWith(QStringLiteral("xcz"), Qt::CaseInsensitive)) {
+             const auto progress_callback = [this](size_t size, size_t progress) {
+                 emit UpdateInstallProgress();
+                 if (install_progress->wasCanceled()) {
+-- 
+2.43.0
+

@@ -1,0 +1,698 @@
+From 3cf75fbb7637c28ad1a0b609a702cda784507ca3 Mon Sep 17 00:00:00 2001
+From: PavelBARABANOV <pavelbarabanov94@gmail.com>
+Date: Sun, 18 Oct 2026 13:14:14 +0300
+Subject: [PATCH 22/56] [core] Support block-compressed NSZ and XCZ
+
+(cherry picked from commit 151bb88d2be47bde28f3e344636d8599408042f4)
+---
+ .../main/java/org/yuzu/yuzu_emu/model/Game.kt |   2 +-
+ .../org/yuzu/yuzu_emu/utils/GameHelper.kt     |   2 +-
+ src/common/zstd_compression.cpp               |   9 +
+ src/common/zstd_compression.h                 |  14 +
+ src/core/CMakeLists.txt                       |   2 +
+ src/core/file_sys/ncz_decompressor.cpp        | 279 ++++++++++++++++++
+ src/core/file_sys/ncz_decompressor.h          |  31 ++
+ src/core/file_sys/registered_cache.cpp        |  37 +++
+ src/core/file_sys/submission_package.cpp      |  13 +
+ src/core/loader/loader.cpp                    |  17 +-
+ src/core/loader/loader.h                      |   2 +
+ src/frontend_common/content_manager.h         |   4 +-
+ src/qt_common/game_list/worker.cpp            |  10 +-
+ src/qt_common/qt_common.cpp                   |   3 +-
+ 14 files changed, 415 insertions(+), 10 deletions(-)
+ create mode 100644 src/core/file_sys/ncz_decompressor.cpp
+ create mode 100644 src/core/file_sys/ncz_decompressor.h
+
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/model/Game.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/model/Game.kt
+index 6717894c9..f5f0cda0e 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/model/Game.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/model/Game.kt
+@@ -100,7 +100,7 @@ class Game(
+ 
+     companion object {
+         val extensions: Set<String> = HashSet(
+-            listOf("xci", "nsp", "nca", "nro")
++            listOf("xci", "nsp", "nca", "nro", "nsz", "xcz")
+         )
+     }
+ }
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GameHelper.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GameHelper.kt
+index 411b764e3..bb2337a31 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GameHelper.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GameHelper.kt
+@@ -109,7 +109,7 @@ object GameHelper {
+ 
+     // File extensions considered as external content, buuut should
+     // be done better imo.
+-    private val externalContentExtensions = setOf("nsp", "xci")
++    private val externalContentExtensions = setOf("nsp", "xci", "nsz", "xcz")
+ 
+     private fun scanContentContainersRecursive(
+         files: Array<MinimalDocumentFile>,
+diff --git a/src/common/zstd_compression.cpp b/src/common/zstd_compression.cpp
+index cb6ec171b..7665482ee 100644
+--- a/src/common/zstd_compression.cpp
++++ b/src/common/zstd_compression.cpp
+@@ -1,3 +1,6 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+@@ -46,4 +49,10 @@ std::vector<u8> DecompressDataZSTD(std::span<const u8> compressed) {
+     return decompressed;
+ }
+ 
++std::size_t DecompressDataZSTD(std::span<const u8> compressed, std::span<u8> output) {
++    const std::size_t result =
++        ZSTD_decompress(output.data(), output.size(), compressed.data(), compressed.size());
++    return ZSTD_isError(result) ? 0 : result;
++}
++
+ } // namespace Common::Compression
+diff --git a/src/common/zstd_compression.h b/src/common/zstd_compression.h
+index a5ab2d05b..819d7d201 100644
+--- a/src/common/zstd_compression.h
++++ b/src/common/zstd_compression.h
+@@ -1,3 +1,6 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+@@ -42,4 +45,15 @@ namespace Common::Compression {
+  */
+ [[nodiscard]] std::vector<u8> DecompressDataZSTD(std::span<const u8> compressed);
+ 
++/**
++ * Decompresses a single Zstandard frame into a caller-provided buffer of known size.
++ *
++ * @param compressed the compressed source memory region.
++ * @param output     the destination buffer. Its size is the maximum number of bytes to write.
++ *
++ * @return the number of bytes written, or 0 if the frame is invalid or doesn't fit. An empty
++ *         frame also returns 0.
++ */
++[[nodiscard]] std::size_t DecompressDataZSTD(std::span<const u8> compressed, std::span<u8> output);
++
+ } // namespace Common::Compression
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 31f9931d3..31e5e7585 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -122,6 +122,8 @@ add_library(core STATIC
+     file_sys/kernel_executable.h
+     file_sys/nca_metadata.cpp
+     file_sys/nca_metadata.h
++    file_sys/ncz_decompressor.cpp
++    file_sys/ncz_decompressor.h
+     file_sys/partition_filesystem.cpp
+     file_sys/partition_filesystem.h
+     file_sys/patch_manager.cpp
+diff --git a/src/core/file_sys/ncz_decompressor.cpp b/src/core/file_sys/ncz_decompressor.cpp
+new file mode 100644
+index 000000000..1dbd3ebd4
+--- /dev/null
++++ b/src/core/file_sys/ncz_decompressor.cpp
+@@ -0,0 +1,279 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include <algorithm>
++#include <array>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <optional>
++#include <span>
++#include <string>
++#include <vector>
++
++#include "common/common_types.h"
++#include "common/logging.h"
++#include "common/zstd_compression.h"
++#include "core/crypto/aes_util.h"
++#include "core/crypto/key_manager.h"
++#include "core/file_sys/ncz_decompressor.h"
++#include "core/file_sys/vfs/vfs.h"
++
++namespace Core::Crypto {
++
++namespace {
++
++constexpr u64 HeaderSize = 0x4000;
++constexpr std::size_t SectionWire = 0x40;
++constexpr std::size_t BlockFixed = 0x18;
++constexpr std::array<u8, 8> SectionsMagic{'N', 'C', 'Z', 'S', 'E', 'C', 'T', 'N'};
++constexpr std::array<u8, 8> BlockMagic{'N', 'C', 'Z', 'B', 'L', 'O', 'C', 'K'};
++
++struct Section {
++    s64 offset, size;
++    u64 crypto_type;
++    Key128 key, counter;
++    bool Ctr() const { return crypto_type == 3 || crypto_type == 4; }
++};
++
++struct BlockHeader {
++    u32 exponent;
++    u64 decompressed_size;
++    std::vector<u32> sizes;
++};
++
++u64 Le(const u8* p, std::size_t n) {
++    u64 v = 0;
++    for (std::size_t i = n; i-- > 0;) v = (v << 8) | p[i];
++    return v;
++}
++
++// Mirrors nsz AESCTR.seek(): upper 8 bytes = stored counter, lower 8 = absolute NCA offset / 16.
++void SetIv(Key128& iv, const Key128& base, u64 off) {
++    iv = base;
++    u64 blk = off >> 4;
++    for (std::size_t i = 0; i < 8; ++i) { iv[15 - i] = static_cast<u8>(blk & 0xFF); blk >>= 8; }
++}
++
++// Parse header + section table + optional block header. Returns payload_start.
++std::optional<std::pair<std::vector<Section>, std::optional<BlockHeader>>> ParseHeader(
++    const FileSys::VirtualFile& f, u64& payload_start) {
++    const u64 fsize = f->GetSize();
++    if (fsize < HeaderSize + 16) return std::nullopt;
++
++    const auto head = f->ReadBytes(16, HeaderSize);
++    if (head.size() != 16 || !std::equal(head.begin(), head.begin() + 8, SectionsMagic.begin()))
++        return std::nullopt;
++    const u64 count = Le(head.data() + 8, 8);
++    if (count == 0 || count > 64 || count * SectionWire > fsize - HeaderSize - 16)
++        return std::nullopt;
++
++    const auto table = f->ReadBytes(count * SectionWire, HeaderSize + 16);
++    if (table.size() != count * SectionWire) return std::nullopt;
++
++    std::vector<Section> sections;
++    sections.reserve(count + 1);
++    for (u64 i = 0; i < count; ++i) {
++        const u8* e = table.data() + i * SectionWire;
++        Section s{};
++        s.offset = static_cast<s64>(Le(e, 8));
++        s.size = static_cast<s64>(Le(e + 8, 8));
++        s.crypto_type = Le(e + 16, 8);
++        std::memcpy(s.key.data(), e + 32, 16);
++        std::memcpy(s.counter.data(), e + 48, 16);
++        sections.push_back(s);
++    }
++
++    const u64 block_start = HeaderSize + 16 + count * SectionWire;
++    const auto fixed = f->ReadBytes(BlockFixed, block_start);
++    std::optional<BlockHeader> bh;
++    if (fixed.size() == BlockFixed &&
++        std::equal(fixed.begin(), fixed.begin() + 8, BlockMagic.begin())) {
++        BlockHeader b{};
++        b.exponent = fixed[11];
++        const s32 n = static_cast<s32>(Le(fixed.data() + 12, 4));
++        if (n <= 0) return std::nullopt;
++        b.decompressed_size = Le(fixed.data() + 16, 8);
++        const auto sizes = f->ReadBytes(static_cast<u64>(n) * 4, block_start + BlockFixed);
++        if (sizes.size() != static_cast<u64>(n) * 4) return std::nullopt;
++        b.sizes.resize(n);
++        for (s32 i = 0; i < n; ++i) b.sizes[i] = static_cast<u32>(Le(sizes.data() + i * 4, 4));
++        payload_start = block_start + BlockFixed + static_cast<u64>(n) * 4;
++        bh = std::move(b);
++    } else {
++        payload_start = block_start;
++    }
++
++    if (!sections.empty() && sections[0].offset > static_cast<s64>(HeaderSize)) {
++        Section fake{};
++        fake.offset = static_cast<s64>(HeaderSize);
++        fake.size = sections[0].offset - static_cast<s64>(HeaderSize);
++        sections.insert(sections.begin(), fake);
++    }
++    return std::make_pair(std::move(sections), std::move(bh));
++}
++
++// Sequential reader over independently-compressed blocks, one block cached (like nsz_rs).
++class BlockReader {
++public:
++    BlockReader(FileSys::VirtualFile f, const BlockHeader& bh, u64 payload_start)
++        : source{std::move(f)}, block_size{1ULL << bh.exponent}, sizes{bh.sizes},
++          decompressed_size{bh.decompressed_size} {
++        if (bh.exponent < 14 || bh.exponent > 32 || sizes.empty())
++            throw std::runtime_error("bad NCZBLOCK header");
++        u64 off = payload_start;
++        offsets.reserve(sizes.size());
++        for (u32 s : sizes) { offsets.push_back(off); off += s; }
++    }
++
++    // Fills `out` from `position`; returns bytes written.
++    std::size_t ReadAt(u64 position, std::span<u8> out) {
++        std::size_t done = 0;
++        while (done < out.size() && position < decompressed_size) {
++            const u64 id = position / block_size;
++            if (id >= sizes.size()) break;
++            if (cache_id != id && !Load(id)) break;
++            const u64 in = position - id * block_size;
++            const std::size_t n = static_cast<std::size_t>(
++                std::min<u64>(out.size() - done, cache.size() - in));
++            std::memcpy(out.data() + done, cache.data() + in, n);
++            done += n;
++            position += n;
++        }
++        return done;
++    }
++
++private:
++    bool Load(u64 id) {
++        u64 want = block_size;
++        if (id + 1 == sizes.size()) {
++            const u64 rem = decompressed_size % block_size;
++            if (rem > 0) want = rem; // avoid the 0-size bug from the original nsz
++        }
++        try { cache.resize(static_cast<std::size_t>(want)); }
++        catch (const std::bad_alloc&) { return false; }
++        const u32 csize = sizes[id];
++        if (csize < want) {
++            const auto comp = source->ReadBytes(csize, offsets[id]);
++            if (comp.size() != csize ||
++                Common::Compression::DecompressDataZSTD(comp, cache) != want) return false;
++        } else if (source->Read(cache.data(), cache.size(), offsets[id]) != cache.size()) {
++            return false;
++        }
++        cache_id = id;
++        return true;
++    }
++
++    FileSys::VirtualFile source;
++    u64 block_size;
++    std::vector<u64> offsets;
++    std::vector<u32> sizes;
++    u64 decompressed_size;
++    u64 cache_id = ~0ULL;
++    std::vector<u8> cache;
++};
++
++class BlockNczFile final : public FileSys::VfsFile {
++public:
++    BlockNczFile(std::string name_, std::vector<u8> hdr_, std::vector<Section> sections_,
++                 std::unique_ptr<BlockReader> body_)
++        : name{std::move(name_)}, hdr{std::move(hdr_)}, sections{std::move(sections_)},
++          body{std::move(body_)} {
++        nca_size = HeaderSize;
++        for (const auto& s : sections)
++            nca_size = std::max<u64>(nca_size, static_cast<u64>(s.offset + s.size));
++        ciphers.reserve(sections.size());
++        for (const auto& s : sections)
++            ciphers.push_back(s.Ctr() ? std::make_unique<AESCipher<Key128>>(s.key, Mode::CTR)
++                                      : nullptr);
++    }
++
++    std::string GetName() const override { return name; }
++    std::size_t GetSize() const override { return static_cast<std::size_t>(nca_size); }
++    bool Resize(std::size_t) override { return false; }
++    FileSys::VirtualDir GetContainingDirectory() const override { return nullptr; }
++    bool IsWritable() const override { return false; }
++    bool IsReadable() const override { return true; }
++
++    std::size_t Read(u8* data, std::size_t len, std::size_t off) const override {
++        if (off >= nca_size) return 0;
++        len = static_cast<std::size_t>(std::min<u64>(len, nca_size - off));
++        const u64 end = off + len;
++        u64 pos = off;
++        if (pos < HeaderSize) {
++            const u64 n = std::min<u64>(end, HeaderSize) - pos;
++            std::memcpy(data, hdr.data() + pos, static_cast<std::size_t>(n));
++            pos += n;
++        }
++        std::scoped_lock lock{mutex};
++        for (std::size_t i = 0; i < sections.size() && pos < end; ++i) {
++            const auto& s = sections[i];
++            const u64 begin = std::max<u64>(static_cast<u64>(s.offset), HeaderSize);
++            const u64 stop = std::max<u64>(static_cast<u64>(s.offset + s.size), begin);
++            if (stop <= pos) continue;
++            if (pos < begin) {
++                const u64 g = std::min(end, begin);
++                std::memset(data + (pos - off), 0, static_cast<std::size_t>(g - pos));
++                pos = g;
++                if (pos >= end) break;
++            }
++            const u64 pe = std::min(end, stop);
++            const std::span<u8> piece(data + (pos - off), static_cast<std::size_t>(pe - pos));
++            if (body->ReadAt(pos - HeaderSize, piece) != piece.size())
++                return static_cast<std::size_t>(pos - off);
++            if (ciphers[i]) {
++                Key128 iv{};
++                SetIv(iv, s.counter, pos);
++                ciphers[i]->SetIV(iv);
++                ciphers[i]->Transcode(piece.data(), piece.size(), piece.data(), Op::Encrypt);
++            }
++            pos = pe;
++        }
++        return len;
++    }
++
++    std::size_t Write(const u8*, std::size_t, std::size_t) override { return 0; }
++    bool Rename(std::string_view) override { return false; }
++
++private:
++    const std::string name;
++    const std::vector<u8> hdr;
++    const std::vector<Section> sections;
++    const std::unique_ptr<BlockReader> body;
++    std::vector<std::unique_ptr<AESCipher<Key128>>> ciphers;
++    mutable std::mutex mutex;
++    u64 nca_size{};
++};
++
++} // Anonymous namespace
++
++bool IsBlockCompressedNCZ(const FileSys::VirtualFile& f) {
++    if (!f) return false;
++    u64 ps = 0;
++    const auto p = ParseHeader(f, ps);
++    return p && p->second.has_value();
++}
++
++FileSys::VirtualFile DecompressNCZ(const FileSys::VirtualFile& f, std::string_view name) {
++    if (!f) return nullptr;
++    u64 ps = 0;
++    auto parsed = ParseHeader(f, ps);
++    if (!parsed) return nullptr;
++    auto& [sections, block] = *parsed;
++    if (!block) {
++        LOG_ERROR(Crypto, "Solid NCZ is not supported (only NCZBLOCK / nsz -B)");
++        return nullptr;
++    }
++    auto hdr = f->ReadBytes(HeaderSize, 0);
++    if (hdr.size() != HeaderSize) return nullptr;
++    std::unique_ptr<BlockReader> body;
++    try { body = std::make_unique<BlockReader>(f, *block, ps); }
++    catch (const std::exception& e) {
++        LOG_ERROR(Crypto, "Failed to open NCZBLOCK: {}", e.what());
++        return nullptr;
++    }
++    return std::make_shared<BlockNczFile>(std::string{name}, std::move(hdr),
++                                          std::move(sections), std::move(body));
++}
++
++} // namespace Core::Crypto
+\ No newline at end of file
+diff --git a/src/core/file_sys/ncz_decompressor.h b/src/core/file_sys/ncz_decompressor.h
+new file mode 100644
+index 000000000..0b001067e
+--- /dev/null
++++ b/src/core/file_sys/ncz_decompressor.h
+@@ -0,0 +1,31 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <string_view>
++
++#include "core/file_sys/vfs/vfs_types.h"
++
++namespace Core::Crypto {
++
++/**
++ * Opens an NCZBLOCK-compressed NCA (nsz -B / .xcz block format) as a VirtualFile backed by
++ * on-demand block decoding. Nothing is written to disk; each read decodes only the blocks it
++ * covers and re-encrypts CTR sections. Solid NCZ is not supported.
++ *
++ * @param ncz_file    The raw NCZ payload (e.g. "<id>.ncz" entry from an NSZ/XCZ PFS0).
++ * @param output_name Name to give the returned VirtualFile (e.g. "<id>.nca").
++ *
++ * @return a VirtualFile for the NCA, or nullptr if the NCZ is malformed or not NCZBLOCK.
++ */
++[[nodiscard]] FileSys::VirtualFile DecompressNCZ(const FileSys::VirtualFile& ncz_file,
++                                                 std::string_view output_name);
++
++/**
++ * Returns true if the given file is an NCZ payload in block-compressed (NCZBLOCK) form,
++ * i.e. one that DecompressNCZ() can open. Solid NCZ returns false.
++ */
++[[nodiscard]] bool IsBlockCompressedNCZ(const FileSys::VirtualFile& ncz_file);
++
++} // namespace Core::Crypto
+\ No newline at end of file
+diff --git a/src/core/file_sys/registered_cache.cpp b/src/core/file_sys/registered_cache.cpp
+index 1f430434f..360f6e534 100644
+--- a/src/core/file_sys/registered_cache.cpp
++++ b/src/core/file_sys/registered_cache.cpp
+@@ -21,6 +21,7 @@
+ #include "core/file_sys/content_archive.h"
+ #include "core/file_sys/control_metadata.h"
+ #include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/ncz_decompressor.h"
+ #include "core/file_sys/registered_cache.h"
+ #include "core/file_sys/romfs.h"
+ #include "core/file_sys/submission_package.h"
+@@ -158,6 +159,25 @@ static std::shared_ptr<NSP> OpenContainerAsNsp(const VirtualFile& file, Loader::
+     return nullptr;
+ }
+ 
++// Checks that every .ncz entry in the container is NCZBLOCK. Solid NCZ has no random access,
++// and the whole point of this build is to reject it at scan time so such files never appear
++// in the game list. Containers without any .ncz (plain NSP/XCI) pass through.
++static bool ContainerIsFullyBlockCompressed(const std::shared_ptr<NSP>& nsp) {
++    if (!nsp) {
++        return false;
++    }
++    for (const auto& entry : nsp->GetFiles()) {
++        const auto name = entry->GetName();
++        if (name.size() < 4 || name.substr(name.size() - 4) != ".ncz") {
++            continue;
++        }
++        if (!Core::Crypto::IsBlockCompressedNCZ(entry)) {
++            return false; // solid NCZ -> reject the whole container
++        }
++    }
++    return true; // no .ncz at all, or all block-compressed
++}
++
+ template <typename Callback>
+ bool ForEachContainerEntry(const std::shared_ptr<NSP>& nsp, bool only_content,
+                            std::optional<u64> base_program_id, Callback&& on_entry) {
+@@ -1273,6 +1293,12 @@ bool ManualContentProvider::AddEntriesFromContainer(VirtualFile file, bool only_
+         return false;
+     }
+ 
++    // Reject solid NCZ (.nsz without -B): only block-compressed NCZ is supported.
++    if (!ContainerIsFullyBlockCompressed(nsp)) {
++        LOG_DEBUG(Service_FS, "Skipping solid-compressed container: {}", file->GetName());
++        return false;
++    }
++
+     return ForEachContainerEntry(
+         nsp, only_content, base_program_id,
+         [this](TitleType title_type, ContentRecordType content_type, u64 title_id,
+@@ -1434,6 +1460,12 @@ void ExternalContentProvider::ProcessNSP(const VirtualFile& file) {
+         return;
+     }
+ 
++    // Reject solid NCZ (.nsz without -B): Eden only supports block-compressed NCZ.
++    if (!ContainerIsFullyBlockCompressed(nsp)) {
++        LOG_DEBUG(Service_FS, "Skipping solid-compressed container: {}", file->GetName());
++        return;
++    }
++
+     LOG_DEBUG(Service_FS, "Processing NSP file: {}", file->GetName());
+     AddExternalEntriesFromContainer(nsp, entries, versions, multi_version_entries);
+ }
+@@ -1444,6 +1476,11 @@ void ExternalContentProvider::ProcessXCI(const VirtualFile& file) {
+         return;
+     }
+ 
++    if (!ContainerIsFullyBlockCompressed(nsp)) {
++        LOG_DEBUG(Service_FS, "Skipping solid-compressed container: {}", file->GetName());
++        return;
++    }
++
+     AddExternalEntriesFromContainer(nsp, entries, versions, multi_version_entries);
+ }
+ 
+diff --git a/src/core/file_sys/submission_package.cpp b/src/core/file_sys/submission_package.cpp
+index 0ea323492..896d9493a 100644
+--- a/src/core/file_sys/submission_package.cpp
++++ b/src/core/file_sys/submission_package.cpp
+@@ -15,6 +15,7 @@
+ #include "core/file_sys/common_funcs.h"
+ #include "core/file_sys/content_archive.h"
+ #include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/ncz_decompressor.h"
+ #include "core/file_sys/partition_filesystem.h"
+ #include "core/file_sys/program_metadata.h"
+ #include "core/file_sys/submission_package.h"
+@@ -246,6 +247,18 @@ void NSP::ReadNCAs(const std::vector<VirtualFile>& files) {
+                 const auto id_string = Common::HexToString(rec.nca_id, false);
+                 auto next_file = pfs->GetFile(fmt::format("{}.nca", id_string));
+ 
++                if (next_file == nullptr) {
++                    auto ncz_file = pfs->GetFile(fmt::format("{}.ncz", id_string));
++                    if (ncz_file != nullptr) {
++                        next_file = Core::Crypto::DecompressNCZ(ncz_file, fmt::format("{}.nca", id_string));
++                        if (next_file == nullptr) {
++                            LOG_WARNING(Service_FS, "Skipping unsupported or corrupt NCZ content {}.ncz",
++                                        id_string);
++                            continue;
++                        }
++                    }
++                }
++
+                 if (next_file == nullptr) {
+                     if (rec.type != ContentRecordType::DeltaFragment) {
+                         LOG_WARNING(Service_FS,
+diff --git a/src/core/loader/loader.cpp b/src/core/loader/loader.cpp
+index 90e23ccc1..48daf9c3f 100644
+--- a/src/core/loader/loader.cpp
++++ b/src/core/loader/loader.cpp
+@@ -82,12 +82,12 @@ std::shared_ptr<FileSys::NSP> OpenContainerAsNsp(FileSys::VirtualFile file, File
+         return nullptr;
+     }
+ 
+-    if (type == FileType::NSP) {
++    if (type == FileType::NSP || type == FileType::NSZ) {
+         auto nsp = std::make_shared<FileSys::NSP>(file, program_id, program_index);
+         return nsp->GetStatus() == ResultStatus::Success ? nsp : nullptr;
+     }
+ 
+-    if (type == FileType::XCI) {
++    if (type == FileType::XCI || type == FileType::XCZ) {
+         FileSys::XCI xci{file, program_id, program_index};
+         if (xci.GetStatus() != ResultStatus::Success) {
+             return nullptr;
+@@ -144,7 +144,8 @@ FileType IdentifyFile(FileSys::VirtualFile file) {
+ }
+ 
+ bool IsContainerType(FileType type) {
+-    return type == FileType::NSP || type == FileType::XCI;
++    return type == FileType::NSP || type == FileType::NSZ || type == FileType::XCI ||
++           type == FileType::XCZ;
+ }
+ 
+ bool IsBootableGameContainer(FileSys::VirtualFile file, FileType type, u64 program_id,
+@@ -180,8 +181,12 @@ FileType GuessFromFilename(const std::string& name) {
+         return FileType::NCA;
+     else if (extension == "xci")
+         return FileType::XCI;
++    else if (extension == "xcz")
++        return FileType::XCZ;
+     else if (extension == "nsp")
+         return FileType::NSP;
++    else if (extension == "nsz")
++        return FileType::NSZ;
+     else if (extension == "kip")
+         return FileType::KIP;
+     return FileType::Unknown;
+@@ -197,10 +202,14 @@ std::string GetFileTypeString(FileType type) {
+         return "NCA";
+     case FileType::XCI:
+         return "XCI";
++    case FileType::XCZ:
++        return "XCZ";
+     case FileType::NAX:
+         return "NAX";
+     case FileType::NSP:
+         return "NSP";
++    case FileType::NSZ:
++        return "NSZ";
+     case FileType::KIP:
+         return "KIP";
+     case FileType::DeconstructedRomDirectory:
+@@ -322,6 +331,7 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::V
+ 
+     // NX XCI (nX Card Image) file format.
+     case FileType::XCI:
++    case FileType::XCZ:
+         return std::make_unique<AppLoader_XCI>(std::move(file), system.GetFileSystemController(),
+                                                system.GetContentProvider(), program_id,
+                                                program_index);
+@@ -332,6 +342,7 @@ static std::unique_ptr<AppLoader> GetFileLoader(Core::System& system, FileSys::V
+ 
+     // NX NSP (Nintendo Submission Package) file format
+     case FileType::NSP:
++    case FileType::NSZ:
+         return std::make_unique<AppLoader_NSP>(std::move(file), system.GetFileSystemController(),
+                                                system.GetContentProvider(), program_id,
+                                                program_index);
+diff --git a/src/core/loader/loader.h b/src/core/loader/loader.h
+index 95ce638da..d3c0230cb 100644
+--- a/src/core/loader/loader.h
++++ b/src/core/loader/loader.h
+@@ -42,7 +42,9 @@ enum class FileType {
+     NRO,
+     NCA,
+     NSP,
++    NSZ,
+     XCI,
++    XCZ,
+     NAX,
+     KIP,
+     DeconstructedRomDirectory,
+diff --git a/src/frontend_common/content_manager.h b/src/frontend_common/content_manager.h
+index 4f3112e3f..d7b76fc3a 100644
+--- a/src/frontend_common/content_manager.h
++++ b/src/frontend_common/content_manager.h
+@@ -163,7 +163,9 @@ inline InstallResult InstallNSP(Core::System& system, FileSys::VfsFilesystem& vf
+ 
+     std::shared_ptr<FileSys::NSP> nsp;
+     FileSys::VirtualFile file = vfs.OpenFile(filename, FileSys::OpenMode::Read);
+-    if (boost::to_lower_copy(file->GetName()).ends_with("nsp")) {
++    const auto lower_name = boost::to_lower_copy(file->GetName());
++
++    if (lower_name.ends_with("nsp") || lower_name.ends_with("nsz")) {
+         nsp = std::make_shared<FileSys::NSP>(file);
+         if (nsp->IsExtractedType()) {
+             return InstallResult::Failure;
+diff --git a/src/qt_common/game_list/worker.cpp b/src/qt_common/game_list/worker.cpp
+index 586a26e8b..6b6f93447 100644
+--- a/src/qt_common/game_list/worker.cpp
++++ b/src/qt_common/game_list/worker.cpp
+@@ -360,7 +360,8 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
+             }
+ 
+             if (target == ScanTarget::PopulateGameList &&
+-                (file_type == Loader::FileType::XCI || file_type == Loader::FileType::NSP) &&
++                (file_type == Loader::FileType::XCI || file_type == Loader::FileType::XCZ ||
++                 file_type == Loader::FileType::NSP || file_type == Loader::FileType::NSZ) &&
+                 !Loader::IsBootableGameContainer(file, file_type)) {
+                 return true;
+             }
+@@ -375,7 +376,9 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
+                                        program_id, file);
+                 } else if (Settings::values.ext_content_from_game_dirs.GetValue() &&
+                            (file_type == Loader::FileType::XCI ||
+-                            file_type == Loader::FileType::NSP)) {
++                            file_type == Loader::FileType::XCZ ||
++                            file_type == Loader::FileType::NSP ||
++                            file_type == Loader::FileType::NSZ)) {
+                     void(provider->AddEntriesFromContainer(file));
+                 }
+             } else {
+@@ -402,7 +405,8 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
+                 };
+ 
+                 if (res2 == Loader::ResultStatus::Success && program_ids.size() > 1 &&
+-                    (file_type == Loader::FileType::XCI || file_type == Loader::FileType::NSP)) {
++                    (file_type == Loader::FileType::XCI || file_type == Loader::FileType::XCZ ||
++                     file_type == Loader::FileType::NSP || file_type == Loader::FileType::NSZ)) {
+                     for (const auto id : program_ids) {
+                         // dravee suggested this, only viable way to
+                         // not show sub-games in qlaunch for now.
+diff --git a/src/qt_common/qt_common.cpp b/src/qt_common/qt_common.cpp
+index b9b8caf6e..794aeaabb 100644
+--- a/src/qt_common/qt_common.cpp
++++ b/src/qt_common/qt_common.cpp
+@@ -57,7 +57,8 @@ std::unique_ptr<EmuThread> emu_thread = nullptr;
+ 
+ const QStringList supported_file_extensions = {QStringLiteral("nro"), QStringLiteral("nso"),
+                                                QStringLiteral("nca"), QStringLiteral("xci"),
+-                                               QStringLiteral("nsp"), QStringLiteral("kip")};
++                                               QStringLiteral("xcz"), QStringLiteral("nsp"),
++                                               QStringLiteral("nsz"), QStringLiteral("kip")};
+ 
+ Core::Frontend::WindowSystemType GetWindowSystemType() {
+     // Determine WSI type based on Qt platform.
+-- 
+2.43.0
+

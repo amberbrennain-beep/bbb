@@ -1,0 +1,46 @@
+From f93fb4b70f6ee94adfe35b269d6717fce395971f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 06:32:53 +0000
+Subject: [PATCH 48/56] [android] Build with NDK r30 and tune the s26 preset
+ for Oryon
+
+Clang 21 knows the Snapdragon 8 Elite cores; -mtune=oryon-1 changes
+scheduling only, the instruction set stays the common S26 subset.
+---
+ CMakeLists.txt                   | 6 ++++++
+ src/android/app/build.gradle.kts | 2 +-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3b30c9886..f10c218ed 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -355,6 +355,12 @@ if (CXX_GCC OR CXX_CLANG)
+             # Galaxy S26: common subset of Snapdragon 8 Elite Gen 5 (Oryon) and Exynos 2600 (C1).
+             # No SVE, Oryon does not implement it.
+             set(march armv8.6-a+fp16+aes+sha2)
++            # Schedule for Oryon; this does not change the instruction set.
++            include(CheckCXXCompilerFlag)
++            check_cxx_compiler_flag(-mtune=oryon-1 COMPILER_HAS_ORYON_TUNE)
++            if (COMPILER_HAS_ORYON_TUNE)
++                set(mtune oryon-1)
++            endif()
+         endif()
+     endif()
+ 
+diff --git a/src/android/app/build.gradle.kts b/src/android/app/build.gradle.kts
+index 643158fc5..8706d15dd 100644
+--- a/src/android/app/build.gradle.kts
++++ b/src/android/app/build.gradle.kts
+@@ -36,7 +36,7 @@ android {
+     namespace = "org.yuzu.yuzu_emu"
+ 
+     compileSdkVersion = "android-36"
+-    ndkVersion = "28.2.13676358"
++    ndkVersion = "30.0.16248370"
+ 
+     val isNightly =
+         providers.gradleProperty("nightly").orNull?.toBooleanStrictOrNull() ?: false
+-- 
+2.43.0
+

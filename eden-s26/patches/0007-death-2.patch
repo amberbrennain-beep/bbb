@@ -1,0 +1,26 @@
+From 4842bbbd782bfb326025ea027a8b92ba2ebb3ff2 Mon Sep 17 00:00:00 2001
+From: lizzie <lizzie@eden-emu.dev>
+Date: Mon, 31 Aug 2026 17:54:16 +0000
+Subject: [PATCH 07/56] death^2
+
+(cherry picked from commit 4feeade51a758afb13e747b90c1aee69aa5edb00)
+---
+ src/core/arm/dynarmic/arm_dynarmic_32.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_32.h b/src/core/arm/dynarmic/arm_dynarmic_32.h
+index d4673eeeb..57c67c693 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_32.h
++++ b/src/core/arm/dynarmic/arm_dynarmic_32.h
+@@ -33,7 +33,7 @@ public:
+     u64 MemoryRead(u32 vaddr, size_t size) override;
+     std::optional<u32> MemoryReadCode(u32 vaddr) override;
+     void InstructionSynchronizationBarrierRaised() override {
+-        last_code_addr = u64(-1); //reset back, force refetch
++        last_code_addr = u32(-1); //reset back, force refetch
+     }
+     void MemoryWrite(Dynarmic::A32::VAddr vaddr, u64 value, size_t size) override;
+     bool MemoryWriteExclusive8(u32 vaddr, u8 value, u8 expected) override;
+-- 
+2.43.0
+

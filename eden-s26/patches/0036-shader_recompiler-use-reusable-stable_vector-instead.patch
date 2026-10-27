@@ -1,0 +1,1640 @@
+From 281acfe7950bbe8f4199aa894d7ddd0a16854eee Mon Sep 17 00:00:00 2001
+From: lizzie <lizzie@eden-emu.dev>
+Date: Mon, 23 Mar 2026 20:37:56 +0000
+Subject: [PATCH 36/56] [shader_recompiler] use reusable stable_vector<>
+ instead of object pools
+
+Signed-off-by: lizzie <lizzie@eden-emu.dev>
+(cherry picked from commit 3de6cfbe4a5e9420fcb0a558edc13b4fa06584d3)
+---
+ src/shader_recompiler/CMakeLists.txt          |   4 +-
+ .../frontend/ir/basic_block.cpp               |  17 +-
+ .../frontend/ir/basic_block.h                 |   8 +-
+ .../frontend/maxwell/control_flow.cpp         |  22 +-
+ .../frontend/maxwell/control_flow.h           |  27 +-
+ .../maxwell/structured_control_flow.cpp       | 269 +++++-------------
+ .../maxwell/structured_control_flow.h         |   9 +-
+ .../frontend/maxwell/translate_program.cpp    |  16 +-
+ .../frontend/maxwell/translate_program.h      |  20 +-
+ src/shader_recompiler/object_pool.h           | 106 -------
+ src/shader_recompiler/shader_pool.h           | 134 +++++++++
+ .../renderer_opengl/gl_shader_cache.cpp       |  33 +--
+ .../renderer_opengl/gl_shader_cache.h         |  20 +-
+ .../renderer_opengl/gl_shader_context.h       |  23 +-
+ .../renderer_vulkan/vk_pipeline_cache.cpp     |  62 ++--
+ .../renderer_vulkan/vk_pipeline_cache.h       |  23 +-
+ src/video_core/shader_cache.cpp               |   3 +-
+ 17 files changed, 310 insertions(+), 486 deletions(-)
+ delete mode 100644 src/shader_recompiler/object_pool.h
+ create mode 100644 src/shader_recompiler/shader_pool.h
+
+diff --git a/src/shader_recompiler/CMakeLists.txt b/src/shader_recompiler/CMakeLists.txt
+index cc9ce95d9..5ebc377e3 100644
+--- a/src/shader_recompiler/CMakeLists.txt
++++ b/src/shader_recompiler/CMakeLists.txt
+@@ -186,12 +186,12 @@ add_library(shader_recompiler STATIC
+     ir_opt/texture_pass.cpp
+     ir_opt/vendor_workaround_pass.cpp
+     ir_opt/verification_pass.cpp
+-    object_pool.h
+     profile.h
+     program_header.h
+     runtime_info.h
+     shader_info.h
+-    varying_state.h)
++    varying_state.h
++    shader_pool.h)
+ 
+ if (ENABLE_OPENGL)
+     target_sources(shader_recompiler PRIVATE
+diff --git a/src/shader_recompiler/frontend/ir/basic_block.cpp b/src/shader_recompiler/frontend/ir/basic_block.cpp
+index 68fab72b3..e4f0ad9b9 100644
+--- a/src/shader_recompiler/frontend/ir/basic_block.cpp
++++ b/src/shader_recompiler/frontend/ir/basic_block.cpp
+@@ -14,7 +14,7 @@
+ 
+ namespace Shader::IR {
+ 
+-Block::Block(ObjectPool<Inst>& inst_pool_) : inst_pool{&inst_pool_} {}
++Block::Block(boost::container::stable_vector<Inst>& inst_pool_) : inst_pool{&inst_pool_} {}
+ 
+ Block::~Block() = default;
+ 
+@@ -23,13 +23,12 @@ void Block::AppendNewInst(Opcode op, std::initializer_list<Value> args) {
+ }
+ 
+ Block::iterator Block::PrependNewInst(iterator insertion_point, const Inst& base_inst) {
+-    Inst* const inst{inst_pool->Create(base_inst)};
++    Inst* const inst{&inst_pool->emplace_back(base_inst)};
+     return instructions.insert(insertion_point, *inst);
+ }
+ 
+-Block::iterator Block::PrependNewInst(iterator insertion_point, Opcode op,
+-                                      std::initializer_list<Value> args, u32 flags) {
+-    Inst* const inst{inst_pool->Create(op, flags)};
++Block::iterator Block::PrependNewInst(iterator insertion_point, Opcode op, std::initializer_list<Value> args, u32 flags) {
++    Inst* const inst{&inst_pool->emplace_back(op, flags)};
+     const auto result_it{instructions.insert(insertion_point, *inst)};
+ 
+     if (inst->NumArgs() != args.size()) {
+@@ -53,12 +52,10 @@ void Block::AddBranch(Block* block) {
+     block->imm_predecessors.push_back(this);
+ }
+ 
+-static std::string BlockToIndex(const std::map<const Block*, size_t>& block_to_index,
+-                                Block* block) {
+-    if (const auto it{block_to_index.find(block)}; it != block_to_index.end()) {
++static std::string BlockToIndex(const std::map<const Block*, size_t>& block_to_index, Block* block) {
++    if (const auto it{block_to_index.find(block)}; it != block_to_index.end())
+         return fmt::format("{{Block ${}}}", it->second);
+-    }
+-    return fmt::format("$<unknown block {:016x}>", reinterpret_cast<u64>(block));
++    return fmt::format("$<unknown block {:016x}>", u64(block));
+ }
+ 
+ static size_t InstIndex(std::map<const Inst*, size_t>& inst_to_index, size_t& inst_index,
+diff --git a/src/shader_recompiler/frontend/ir/basic_block.h b/src/shader_recompiler/frontend/ir/basic_block.h
+index d3a66caac..18910c6c2 100644
+--- a/src/shader_recompiler/frontend/ir/basic_block.h
++++ b/src/shader_recompiler/frontend/ir/basic_block.h
+@@ -1,4 +1,4 @@
+-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+@@ -13,11 +13,11 @@
+ #include <bit>
+ #include <numeric>
+ #include <boost/intrusive/list.hpp>
++#include <boost/container/stable_vector.hpp>
+ 
+ #include "common/common_types.h"
+ #include "shader_recompiler/frontend/ir/condition.h"
+ #include "shader_recompiler/frontend/ir/value.h"
+-#include "shader_recompiler/object_pool.h"
+ 
+ namespace Shader::IR {
+ 
+@@ -30,7 +30,7 @@ public:
+     using reverse_iterator = InstructionList::reverse_iterator;
+     using const_reverse_iterator = InstructionList::const_reverse_iterator;
+ 
+-    explicit Block(ObjectPool<Inst>& inst_pool_);
++    explicit Block(boost::container::stable_vector<Inst>& inst_pool_);
+     ~Block();
+ 
+     Block(const Block&) = delete;
+@@ -170,7 +170,7 @@ public:
+ 
+ private:
+     /// Memory pool for instruction list
+-    ObjectPool<Inst>* inst_pool;
++    boost::container::stable_vector<Inst>* inst_pool;
+ 
+     /// List of instructions in this block
+     InstructionList instructions;
+diff --git a/src/shader_recompiler/frontend/maxwell/control_flow.cpp b/src/shader_recompiler/frontend/maxwell/control_flow.cpp
+index 7dabfbf16..1b9651ba2 100644
+--- a/src/shader_recompiler/frontend/maxwell/control_flow.cpp
++++ b/src/shader_recompiler/frontend/maxwell/control_flow.cpp
+@@ -1,4 +1,4 @@
+-// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+@@ -174,11 +174,10 @@ bool Block::Contains(Location pc) const noexcept {
+     return pc >= begin && pc < end;
+ }
+ 
+-Function::Function(ObjectPool<Block>& block_pool, Location start_address)
+-    : entrypoint{start_address} {
++Function::Function(boost::container::stable_vector<Block>& block_pool, Location start_address) : entrypoint{start_address} {
+     Label& label{labels.emplace_back()};
+     label.address = start_address;
+-    label.block = block_pool.Create(Block{});
++    label.block = &block_pool.emplace_back(Block{});
+     label.block->begin = start_address;
+     label.block->end = start_address;
+     label.block->end_class = EndClass::Branch;
+@@ -187,12 +186,13 @@ Function::Function(ObjectPool<Block>& block_pool, Location start_address)
+     label.block->branch_false = nullptr;
+ }
+ 
+-CFG::CFG(Environment& env_, ObjectPool<Block>& block_pool_, Location start_address,
+-         bool exits_to_dispatcher_)
+-    : env{env_}, block_pool{block_pool_}, program_start{start_address}, exits_to_dispatcher{
+-                                                                            exits_to_dispatcher_} {
++CFG::CFG(Environment& env_, boost::container::stable_vector<Block>& block_pool_, Location start_address, bool exits_to_dispatcher_)
++    : env{env_}
++    , block_pool{block_pool_}
++    , program_start{start_address}
++    , exits_to_dispatcher{exits_to_dispatcher_} {
+     if (exits_to_dispatcher) {
+-        dispatch_block = block_pool.Create(Block{});
++        dispatch_block = &block_pool.emplace_back(Block{});
+         dispatch_block->begin = {};
+         dispatch_block->end = {};
+         dispatch_block->end_class = EndClass::Exit;
+@@ -371,7 +371,7 @@ void CFG::AnalyzeCondInst(Block* block, FunctionId function_id, Location pc,
+         return;
+     }
+     // Create a virtual block and a conditional block
+-    Block* const conditional_block{block_pool.Create()};
++    Block* const conditional_block{&block_pool.emplace_back()};
+     Block virtual_block{};
+     virtual_block.begin = block->begin.Virtual();
+     virtual_block.end = block->begin.Virtual();
+@@ -546,7 +546,7 @@ Block* CFG::AddLabel(Block* block, Stack stack, Location pc, FunctionId function
+     if (label_it != function.labels.end()) {
+         return label_it->block;
+     }
+-    Block* const new_block{block_pool.Create()};
++    Block* const new_block{&block_pool.emplace_back()};
+     new_block->begin = pc;
+     new_block->end = pc;
+     new_block->end_class = EndClass::Branch;
+diff --git a/src/shader_recompiler/frontend/maxwell/control_flow.h b/src/shader_recompiler/frontend/maxwell/control_flow.h
+index 1ce45b3a5..5002130ce 100644
+--- a/src/shader_recompiler/frontend/maxwell/control_flow.h
++++ b/src/shader_recompiler/frontend/maxwell/control_flow.h
+@@ -1,3 +1,6 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+@@ -9,6 +12,7 @@
+ #include <vector>
+ 
+ #include <boost/container/small_vector.hpp>
++#include <boost/container/stable_vector.hpp>
+ #include <boost/intrusive/set.hpp>
+ 
+ #include "shader_recompiler/environment.h"
+@@ -17,7 +21,6 @@
+ #include "shader_recompiler/frontend/maxwell/instruction.h"
+ #include "shader_recompiler/frontend/maxwell/location.h"
+ #include "shader_recompiler/frontend/maxwell/opcodes.h"
+-#include "shader_recompiler/object_pool.h"
+ 
+ namespace Shader::Maxwell::Flow {
+ 
+@@ -96,7 +99,7 @@ struct Label {
+ };
+ 
+ struct Function {
+-    explicit Function(ObjectPool<Block>& block_pool, Location start_address);
++    explicit Function(boost::container::stable_vector<Block>& block_pool, Location start_address);
+ 
+     Location entrypoint;
+     boost::container::small_vector<Label, 16> labels;
+@@ -110,8 +113,7 @@ class CFG {
+     };
+ 
+ public:
+-    explicit CFG(Environment& env, ObjectPool<Block>& block_pool, Location start_address,
+-                 bool exits_to_dispatcher = false);
++    explicit CFG(Environment& env, boost::container::stable_vector<Block>& block_pool, Location start_address, bool exits_to_dispatcher = false);
+ 
+     CFG& operator=(const CFG&) = delete;
+     CFG(const CFG&) = delete;
+@@ -138,27 +140,20 @@ private:
+     /// Inspect already visited blocks.
+     /// Return true when the block has already been visited
+     bool InspectVisitedBlocks(FunctionId function_id, const Label& label);
+-
+     AnalysisState AnalyzeInst(Block* block, FunctionId function_id, Location pc);
+-
+-    void AnalyzeCondInst(Block* block, FunctionId function_id, Location pc, EndClass insn_end_class,
+-                         IR::Condition cond);
++    void AnalyzeCondInst(Block* block, FunctionId function_id, Location pc, EndClass insn_end_class, IR::Condition cond);
+ 
+     /// Return true when the branch instruction is confirmed to be a branch
+-    bool AnalyzeBranch(Block* block, FunctionId function_id, Location pc, Instruction inst,
+-                       Opcode opcode);
+-
+-    void AnalyzeBRA(Block* block, FunctionId function_id, Location pc, Instruction inst,
+-                    bool is_absolute);
+-    AnalysisState AnalyzeBRX(Block* block, Location pc, Instruction inst, bool is_absolute,
+-                             FunctionId function_id);
++    bool AnalyzeBranch(Block* block, FunctionId function_id, Location pc, Instruction inst, Opcode opcode);
++    void AnalyzeBRA(Block* block, FunctionId function_id, Location pc, Instruction inst, bool is_absolute);
++    AnalysisState AnalyzeBRX(Block* block, Location pc, Instruction inst, bool is_absolute, FunctionId function_id);
+     AnalysisState AnalyzeEXIT(Block* block, FunctionId function_id, Location pc, Instruction inst);
+ 
+     /// Return the branch target block id
+     Block* AddLabel(Block* block, Stack stack, Location pc, FunctionId function_id);
+ 
+     Environment& env;
+-    ObjectPool<Block>& block_pool;
++    boost::container::stable_vector<Block>& block_pool;
+     boost::container::small_vector<Function, 1> functions;
+     Location program_start;
+     bool exits_to_dispatcher{};
+diff --git a/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp b/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+index 329d44443..14570f7ec 100644
+--- a/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
++++ b/src/shader_recompiler/frontend/maxwell/structured_control_flow.cpp
+@@ -13,143 +13,19 @@
+ 
+ #include <fmt/ranges.h>
+ 
+-#include <boost/intrusive/list.hpp>
+-
+ #include <ranges>
++#include "shader_recompiler/shader_pool.h"
+ #include "shader_recompiler/environment.h"
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/ir/ir_emitter.h"
+ #include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
+ #include "shader_recompiler/frontend/maxwell/translate/translate.h"
++#include "shader_recompiler/frontend/maxwell/translate_program.h"
++#include "shader_recompiler/frontend/maxwell/control_flow.h"
+ #include "shader_recompiler/host_translate_info.h"
+-#include "shader_recompiler/object_pool.h"
+ 
+ namespace Shader::Maxwell {
+ namespace {
+-struct Statement;
+-
+-// Use normal_link because we are not guaranteed to destroy the tree in order
+-using ListBaseHook =
+-    boost::intrusive::list_base_hook<boost::intrusive::link_mode<boost::intrusive::normal_link>>;
+-
+-using Tree = boost::intrusive::list<Statement,
+-                                    // Allow using Statement without a definition
+-                                    boost::intrusive::base_hook<ListBaseHook>,
+-                                    // Avoid linear complexity on splice, size is never called
+-                                    boost::intrusive::constant_time_size<false>>;
+-using Node = Tree::iterator;
+-
+-enum class StatementType {
+-    Code,
+-    Goto,
+-    Label,
+-    If,
+-    Loop,
+-    Break,
+-    Return,
+-    Kill,
+-    Unreachable,
+-    Function,
+-    Identity,
+-    Not,
+-    Or,
+-    SetVariable,
+-    SetIndirectBranchVariable,
+-    Variable,
+-    IndirectBranchCond,
+-};
+-
+-bool HasChildren(StatementType type) {
+-    switch (type) {
+-    case StatementType::If:
+-    case StatementType::Loop:
+-    case StatementType::Function:
+-        return true;
+-    default:
+-        return false;
+-    }
+-}
+-
+-struct Goto {};
+-struct Label {};
+-struct If {};
+-struct Loop {};
+-struct Break {};
+-struct Return {};
+-struct Kill {};
+-struct Unreachable {};
+-struct FunctionTag {};
+-struct Identity {};
+-struct Not {};
+-struct Or {};
+-struct SetVariable {};
+-struct SetIndirectBranchVariable {};
+-struct Variable {};
+-struct IndirectBranchCond {};
+-
+-#ifdef _MSC_VER
+-#pragma warning(push)
+-#pragma warning(disable : 26495) // Always initialize a member variable, expected in Statement
+-#endif
+-struct Statement : ListBaseHook {
+-    Statement(const Flow::Block* block_, Statement* up_)
+-        : block{block_}, up{up_}, type{StatementType::Code} {}
+-    Statement(Goto, Statement* cond_, Node label_, Statement* up_)
+-        : label{label_}, cond{cond_}, up{up_}, type{StatementType::Goto} {}
+-    Statement(Label, u32 id_, Statement* up_) : id{id_}, up{up_}, type{StatementType::Label} {}
+-    Statement(If, Statement* cond_, Tree&& children_, Statement* up_)
+-        : children{std::move(children_)}, cond{cond_}, up{up_}, type{StatementType::If} {}
+-    Statement(Loop, Statement* cond_, Tree&& children_, Statement* up_)
+-        : children{std::move(children_)}, cond{cond_}, up{up_}, type{StatementType::Loop} {}
+-    Statement(Break, Statement* cond_, Statement* up_)
+-        : cond{cond_}, up{up_}, type{StatementType::Break} {}
+-    Statement(Return, Statement* up_) : up{up_}, type{StatementType::Return} {}
+-    Statement(Kill, Statement* up_) : up{up_}, type{StatementType::Kill} {}
+-    Statement(Unreachable, Statement* up_) : up{up_}, type{StatementType::Unreachable} {}
+-    Statement(FunctionTag) : children{}, type{StatementType::Function} {}
+-    Statement(Identity, IR::Condition cond_, Statement* up_)
+-        : guest_cond{cond_}, up{up_}, type{StatementType::Identity} {}
+-    Statement(Not, Statement* op_, Statement* up_) : op{op_}, up{up_}, type{StatementType::Not} {}
+-    Statement(Or, Statement* op_a_, Statement* op_b_, Statement* up_)
+-        : op_a{op_a_}, op_b{op_b_}, up{up_}, type{StatementType::Or} {}
+-    Statement(SetVariable, u32 id_, Statement* op_, Statement* up_)
+-        : op{op_}, id{id_}, up{up_}, type{StatementType::SetVariable} {}
+-    Statement(SetIndirectBranchVariable, IR::Reg branch_reg_, s32 branch_offset_, Statement* up_)
+-        : branch_offset{branch_offset_},
+-          branch_reg{branch_reg_}, up{up_}, type{StatementType::SetIndirectBranchVariable} {}
+-    Statement(Variable, u32 id_, Statement* up_)
+-        : id{id_}, up{up_}, type{StatementType::Variable} {}
+-    Statement(IndirectBranchCond, u32 location_, Statement* up_)
+-        : location{location_}, up{up_}, type{StatementType::IndirectBranchCond} {}
+-
+-    ~Statement() {
+-        if (HasChildren(type)) {
+-            std::destroy_at(&children);
+-        }
+-    }
+-
+-    union {
+-        const Flow::Block* block;
+-        Node label;
+-        Tree children;
+-        IR::Condition guest_cond;
+-        Statement* op;
+-        Statement* op_a;
+-        u32 location;
+-        s32 branch_offset;
+-    };
+-    union {
+-        Statement* cond;
+-        Statement* op_b;
+-        u32 id;
+-        IR::Reg branch_reg;
+-    };
+-    Statement* up{};
+-    StatementType type;
+-};
+-#ifdef _MSC_VER
+-#pragma warning(pop)
+-#endif
+ 
+ std::string DumpExpr(const Statement* stmt) {
+     switch (stmt->type) {
+@@ -314,7 +190,9 @@ bool NeedsLift(Node goto_stmt, Node label_stmt) noexcept {
+ 
+ class GotoPass {
+ public:
+-    explicit GotoPass(Flow::CFG& cfg, ObjectPool<Statement>& stmt_pool) : pool{stmt_pool} {
++    explicit GotoPass(Flow::CFG& cfg, ShaderPools& pools_)
++        : pools{pools_}
++    {
+         std::vector gotos{BuildTree(cfg)};
+         const auto end{gotos.rend()};
+         for (auto goto_stmt = gotos.rbegin(); goto_stmt != end; ++goto_stmt) {
+@@ -385,16 +263,14 @@ private:
+         return gotos;
+     }
+ 
+-    void BuildTree(Flow::CFG& cfg, Flow::Function& function, u32& label_id,
+-                   std::vector<Node>& gotos, Node function_insert_point,
+-                   std::optional<Node> return_label) {
+-        Statement* const false_stmt{pool.Create(Identity{}, IR::Condition{false}, &root_stmt)};
++    void BuildTree(Flow::CFG& cfg, Flow::Function& function, u32& label_id, std::vector<Node>& gotos, Node function_insert_point, std::optional<Node> return_label) {
++        Statement* const false_stmt{&pools.stmt.emplace_back(Identity{}, IR::Condition{false}, &root_stmt)};
+         Tree& root{root_stmt.children};
+         ::Common::unordered_map<Flow::Block*, Node> local_labels;
+         local_labels.reserve(function.blocks.size());
+ 
+         for (Flow::Block& block : function.blocks) {
+-            Statement* const label{pool.Create(Label{}, label_id, &root_stmt)};
++            Statement* const label{&pools.stmt.emplace_back(Label{}, label_id, &root_stmt)};
+             const Node label_it{root.insert(function_insert_point, *label)};
+             local_labels.emplace(&block, label_it);
+             ++label_id;
+@@ -406,46 +282,39 @@ private:
+ 
+             // Reset goto variables before the first block and after its respective label
+             const auto make_reset_variable{[&]() -> Statement& {
+-                return *pool.Create(SetVariable{}, label->id, false_stmt, &root_stmt);
++                return pools.stmt.emplace_back(SetVariable{}, label->id, false_stmt, &root_stmt);
+             }};
+             root.push_front(make_reset_variable());
+             root.insert(ip, make_reset_variable());
+-            root.insert(ip, *pool.Create(&block, &root_stmt));
++            root.insert(ip, pools.stmt.emplace_back(&block, &root_stmt));
+ 
+             switch (block.end_class) {
+             case Flow::EndClass::Branch: {
+-                Statement* const always_cond{
+-                    pool.Create(Identity{}, IR::Condition{true}, &root_stmt)};
++                Statement* const always_cond{&pools.stmt.emplace_back(Identity{}, IR::Condition{true}, &root_stmt)};
+                 if (block.cond == IR::Condition{true}) {
+                     const Node true_label{local_labels.at(block.branch_true)};
+-                    gotos.push_back(
+-                        root.insert(ip, *pool.Create(Goto{}, always_cond, true_label, &root_stmt)));
++                    gotos.push_back(root.insert(ip, pools.stmt.emplace_back(Goto{}, always_cond, true_label, &root_stmt)));
+                 } else if (block.cond == IR::Condition{false}) {
+                     const Node false_label{local_labels.at(block.branch_false)};
+-                    gotos.push_back(root.insert(
+-                        ip, *pool.Create(Goto{}, always_cond, false_label, &root_stmt)));
++                    gotos.push_back(root.insert(ip, pools.stmt.emplace_back(Goto{}, always_cond, false_label, &root_stmt)));
+                 } else {
+                     const Node true_label{local_labels.at(block.branch_true)};
+                     const Node false_label{local_labels.at(block.branch_false)};
+-                    Statement* const true_cond{pool.Create(Identity{}, block.cond, &root_stmt)};
+-                    gotos.push_back(
+-                        root.insert(ip, *pool.Create(Goto{}, true_cond, true_label, &root_stmt)));
+-                    gotos.push_back(root.insert(
+-                        ip, *pool.Create(Goto{}, always_cond, false_label, &root_stmt)));
++                    Statement* const true_cond{&pools.stmt.emplace_back(Identity{}, block.cond, &root_stmt)};
++                    gotos.push_back(root.insert(ip, pools.stmt.emplace_back(Goto{}, true_cond, true_label, &root_stmt)));
++                    gotos.push_back(root.insert(ip, pools.stmt.emplace_back(Goto{}, always_cond, false_label, &root_stmt)));
+                 }
+                 break;
+             }
+             case Flow::EndClass::IndirectBranch:
+-                root.insert(ip, *pool.Create(SetIndirectBranchVariable{}, block.branch_reg,
+-                                             block.branch_offset, &root_stmt));
++                root.insert(ip, pools.stmt.emplace_back(SetIndirectBranchVariable{}, block.branch_reg, block.branch_offset, &root_stmt));
+                 for (const Flow::IndirectBranch& indirect : block.indirect_branches) {
+                     const Node indirect_label{local_labels.at(indirect.block)};
+-                    Statement* cond{
+-                        pool.Create(IndirectBranchCond{}, indirect.address, &root_stmt)};
+-                    Statement* goto_stmt{pool.Create(Goto{}, cond, indirect_label, &root_stmt)};
++                    Statement* cond{&pools.stmt.emplace_back(IndirectBranchCond{}, indirect.address, &root_stmt)};
++                    Statement* goto_stmt{&pools.stmt.emplace_back(Goto{}, cond, indirect_label, &root_stmt)};
+                     gotos.push_back(root.insert(ip, *goto_stmt));
+                 }
+-                root.insert(ip, *pool.Create(Unreachable{}, &root_stmt));
++                root.insert(ip, pools.stmt.emplace_back(Unreachable{}, &root_stmt));
+                 break;
+             case Flow::EndClass::Call: {
+                 Flow::Function& call{cfg.Functions()[block.function_call]};
+@@ -454,16 +323,16 @@ private:
+                 break;
+             }
+             case Flow::EndClass::Exit:
+-                root.insert(ip, *pool.Create(Return{}, &root_stmt));
++                root.insert(ip, pools.stmt.emplace_back(Return{}, &root_stmt));
+                 break;
+             case Flow::EndClass::Return: {
+-                Statement* const always_cond{pool.Create(Identity{}, block.cond, &root_stmt)};
+-                auto goto_stmt{pool.Create(Goto{}, always_cond, return_label.value(), &root_stmt)};
++                Statement* const always_cond{&pools.stmt.emplace_back(Identity{}, block.cond, &root_stmt)};
++                auto goto_stmt{&pools.stmt.emplace_back(Goto{}, always_cond, return_label.value(), &root_stmt)};
+                 gotos.push_back(root.insert(ip, *goto_stmt));
+                 break;
+             }
+             case Flow::EndClass::Kill:
+-                root.insert(ip, *pool.Create(Kill{}, &root_stmt));
++                root.insert(ip, pools.stmt.emplace_back(Kill{}, &root_stmt));
+                 break;
+             }
+         }
+@@ -479,8 +348,8 @@ private:
+         Tree& body{goto_stmt->up->children};
+         Tree if_body;
+         if_body.splice(if_body.begin(), body, std::next(goto_stmt), label_stmt);
+-        Statement* const cond{pool.Create(Not{}, goto_stmt->cond, &root_stmt)};
+-        Statement* const if_stmt{pool.Create(If{}, cond, std::move(if_body), goto_stmt->up)};
++        Statement* const cond{&pools.stmt.emplace_back(Not{}, goto_stmt->cond, &root_stmt)};
++        Statement* const if_stmt{&pools.stmt.emplace_back(If{}, cond, std::move(if_body), goto_stmt->up)};
+         UpdateTreeUp(if_stmt);
+         body.insert(goto_stmt, *if_stmt);
+         body.erase(goto_stmt);
+@@ -491,7 +360,7 @@ private:
+         Tree loop_body;
+         loop_body.splice(loop_body.begin(), body, label_stmt, goto_stmt);
+         Statement* const cond{goto_stmt->cond};
+-        Statement* const loop{pool.Create(Loop{}, cond, std::move(loop_body), goto_stmt->up)};
++        Statement* const loop{&pools.stmt.emplace_back(Loop{}, cond, std::move(loop_body), goto_stmt->up)};
+         UpdateTreeUp(loop);
+         body.insert(goto_stmt, *loop);
+         body.erase(goto_stmt);
+@@ -516,15 +385,15 @@ private:
+         const u32 label_id{label->id};
+ 
+         Statement* const goto_cond{goto_stmt->cond};
+-        Statement* const set_var{pool.Create(SetVariable{}, label_id, goto_cond, parent)};
++        Statement* const set_var{&pools.stmt.emplace_back(SetVariable{}, label_id, goto_cond, parent)};
+         body.insert(goto_stmt, *set_var);
+ 
+         Tree if_body;
+         if_body.splice(if_body.begin(), body, std::next(goto_stmt), label_nested_stmt);
+-        Statement* const variable{pool.Create(Variable{}, label_id, &root_stmt)};
+-        Statement* const neg_var{pool.Create(Not{}, variable, &root_stmt)};
++        Statement* const variable{&pools.stmt.emplace_back(Variable{}, label_id, &root_stmt)};
++        Statement* const neg_var{&pools.stmt.emplace_back(Not{}, variable, &root_stmt)};
+         if (!if_body.empty()) {
+-            Statement* const if_stmt{pool.Create(If{}, neg_var, std::move(if_body), parent)};
++            Statement* const if_stmt{&pools.stmt.emplace_back(If{}, neg_var, std::move(if_body), parent)};
+             UpdateTreeUp(if_stmt);
+             body.insert(goto_stmt, *if_stmt);
+         }
+@@ -533,8 +402,7 @@ private:
+         switch (label_nested_stmt->type) {
+         case StatementType::If:
+             // Update nested if condition
+-            label_nested_stmt->cond =
+-                pool.Create(Or{}, variable, label_nested_stmt->cond, &root_stmt);
++            label_nested_stmt->cond = &pools.stmt.emplace_back(Or{}, variable, label_nested_stmt->cond, &root_stmt);
+             break;
+         case StatementType::Loop:
+             break;
+@@ -542,7 +410,7 @@ private:
+             throw LogicError("Invalid inward movement");
+         }
+         Tree& nested_tree{label_nested_stmt->children};
+-        Statement* const new_goto{pool.Create(Goto{}, variable, label, &*label_nested_stmt)};
++        Statement* const new_goto{&pools.stmt.emplace_back(Goto{}, variable, label, &*label_nested_stmt)};
+         return nested_tree.insert(nested_tree.begin(), *new_goto);
+     }
+ 
+@@ -556,16 +424,16 @@ private:
+         Tree loop_body;
+         loop_body.splice(loop_body.begin(), body, label_nested_stmt, goto_stmt);
+         SanitizeNoBreaks(loop_body);
+-        Statement* const variable{pool.Create(Variable{}, label_id, &root_stmt)};
+-        Statement* const loop_stmt{pool.Create(Loop{}, variable, std::move(loop_body), parent)};
++        Statement* const variable{&pools.stmt.emplace_back(Variable{}, label_id, &root_stmt)};
++        Statement* const loop_stmt{&pools.stmt.emplace_back(Loop{}, variable, std::move(loop_body), parent)};
+         UpdateTreeUp(loop_stmt);
+         body.insert(goto_stmt, *loop_stmt);
+ 
+-        Statement* const new_goto{pool.Create(Goto{}, variable, label, loop_stmt)};
++        Statement* const new_goto{&pools.stmt.emplace_back(Goto{}, variable, label, loop_stmt)};
+         loop_stmt->children.push_front(*new_goto);
+         const Node new_goto_node{loop_stmt->children.begin()};
+ 
+-        Statement* const set_var{pool.Create(SetVariable{}, label_id, goto_stmt->cond, loop_stmt)};
++        Statement* const set_var{&pools.stmt.emplace_back(SetVariable{}, label_id, goto_stmt->cond, loop_stmt)};
+         loop_stmt->children.push_back(*set_var);
+ 
+         body.erase(goto_stmt);
+@@ -577,22 +445,22 @@ private:
+         Tree& body{parent->children};
+         const u32 label_id{goto_stmt->label->id};
+         Statement* const goto_cond{goto_stmt->cond};
+-        Statement* const set_goto_var{pool.Create(SetVariable{}, label_id, goto_cond, &*parent)};
++        Statement* const set_goto_var{&pools.stmt.emplace_back(SetVariable{}, label_id, goto_cond, &*parent)};
+         body.insert(goto_stmt, *set_goto_var);
+ 
+         Tree if_body;
+         if_body.splice(if_body.begin(), body, std::next(goto_stmt), body.end());
+         if_body.pop_front();
+-        Statement* const cond{pool.Create(Variable{}, label_id, &root_stmt)};
+-        Statement* const neg_cond{pool.Create(Not{}, cond, &root_stmt)};
+-        Statement* const if_stmt{pool.Create(If{}, neg_cond, std::move(if_body), &*parent)};
++        Statement* const cond{&pools.stmt.emplace_back(Variable{}, label_id, &root_stmt)};
++        Statement* const neg_cond{&pools.stmt.emplace_back(Not{}, cond, &root_stmt)};
++        Statement* const if_stmt{&pools.stmt.emplace_back(If{}, neg_cond, std::move(if_body), &*parent)};
+         UpdateTreeUp(if_stmt);
+         body.insert(goto_stmt, *if_stmt);
+ 
+         body.erase(goto_stmt);
+ 
+-        Statement* const new_cond{pool.Create(Variable{}, label_id, &root_stmt)};
+-        Statement* const new_goto{pool.Create(Goto{}, new_cond, goto_stmt->label, parent->up)};
++        Statement* const new_cond{&pools.stmt.emplace_back(Variable{}, label_id, &root_stmt)};
++        Statement* const new_goto{&pools.stmt.emplace_back(Goto{}, new_cond, goto_stmt->label, parent->up)};
+         Tree& parent_tree{parent->up->children};
+         return parent_tree.insert(std::next(parent), *new_goto);
+     }
+@@ -602,21 +470,21 @@ private:
+         Tree& body{parent->children};
+         const u32 label_id{goto_stmt->label->id};
+         Statement* const goto_cond{goto_stmt->cond};
+-        Statement* const set_goto_var{pool.Create(SetVariable{}, label_id, goto_cond, parent)};
+-        Statement* const cond{pool.Create(Variable{}, label_id, &root_stmt)};
+-        Statement* const break_stmt{pool.Create(Break{}, cond, parent)};
++        Statement* const set_goto_var{&pools.stmt.emplace_back(SetVariable{}, label_id, goto_cond, parent)};
++        Statement* const cond{&pools.stmt.emplace_back(Variable{}, label_id, &root_stmt)};
++        Statement* const break_stmt{&pools.stmt.emplace_back(Break{}, cond, parent)};
+         body.insert(goto_stmt, *set_goto_var);
+         body.insert(goto_stmt, *break_stmt);
+         body.erase(goto_stmt);
+ 
+         const Node loop{Tree::s_iterator_to(*goto_stmt->up)};
+-        Statement* const new_goto_cond{pool.Create(Variable{}, label_id, &root_stmt)};
+-        Statement* const new_goto{pool.Create(Goto{}, new_goto_cond, goto_stmt->label, loop->up)};
++        Statement* const new_goto_cond{&pools.stmt.emplace_back(Variable{}, label_id, &root_stmt)};
++        Statement* const new_goto{&pools.stmt.emplace_back(Goto{}, new_goto_cond, goto_stmt->label, loop->up)};
+         Tree& parent_tree{loop->up->children};
+         return parent_tree.insert(std::next(loop), *new_goto);
+     }
+ 
+-    ObjectPool<Statement>& pool;
++    ShaderPools& pools;
+     Statement root_stmt{FunctionTag{}};
+ };
+ 
+@@ -652,11 +520,11 @@ private:
+ 
+ class TranslatePass {
+ public:
+-    TranslatePass(ObjectPool<IR::Inst>& inst_pool_, ObjectPool<IR::Block>& block_pool_,
+-                  ObjectPool<Statement>& stmt_pool_, Environment& env_, Statement& root_stmt,
+-                  IR::AbstractSyntaxList& syntax_list_, const HostTranslateInfo& host_info)
+-        : stmt_pool{stmt_pool_}, inst_pool{inst_pool_}, block_pool{block_pool_}, env{env_},
+-          syntax_list{syntax_list_} {
++    TranslatePass(ShaderPools& pools_, Environment& env_, Statement& root_stmt, IR::AbstractSyntaxList& syntax_list_, const HostTranslateInfo& host_info)
++        : pools{pools_}
++        , env{env_}
++        , syntax_list{syntax_list_}
++    {
+         Visit(root_stmt, nullptr, nullptr);
+ 
+         IR::Block& first_block{*syntax_list.front().data.block};
+@@ -674,7 +542,7 @@ private:
+             if (current_block) {
+                 return;
+             }
+-            current_block = block_pool.Create(inst_pool);
++            current_block = &pools.block.emplace_back(pools.inst);
+             auto& node{syntax_list.emplace_back()};
+             node.type = IR::AbstractSyntaxNode::Type::Block;
+             node.data.block = current_block;
+@@ -740,7 +608,7 @@ private:
+                 break;
+             }
+             case StatementType::Loop: {
+-                IR::Block* const loop_header_block{block_pool.Create(inst_pool)};
++                IR::Block* const loop_header_block{&pools.block.emplace_back(pools.inst)};
+                 if (current_block) {
+                     current_block->AddBranch(loop_header_block);
+                 }
+@@ -748,7 +616,7 @@ private:
+                 header_node.type = IR::AbstractSyntaxNode::Type::Block;
+                 header_node.data.block = loop_header_block;
+ 
+-                IR::Block* const continue_block{block_pool.Create(inst_pool)};
++                IR::Block* const continue_block{&pools.block.emplace_back(pools.inst)};
+                 IR::Block* const merge_block{MergeBlock(parent, stmt)};
+ 
+                 const size_t loop_node_index{syntax_list.size()};
+@@ -814,7 +682,7 @@ private:
+             }
+             case StatementType::Return: {
+                 ensure_block();
+-                IR::Block* return_block{block_pool.Create(inst_pool)};
++                IR::Block* return_block{&pools.block.emplace_back(pools.inst)};
+                 IR::IREmitter{*return_block}.Epilogue();
+                 current_block->AddBranch(return_block);
+ 
+@@ -862,10 +730,10 @@ private:
+         Statement* merge_stmt{TryFindForwardBlock(stmt)};
+         if (!merge_stmt) {
+             // Create a merge block we can visit later
+-            merge_stmt = stmt_pool.Create(&dummy_flow_block, &parent);
++            merge_stmt = &pools.stmt.emplace_back(&dummy_flow_block, &parent);
+             parent.children.insert(std::next(Tree::s_iterator_to(stmt)), *merge_stmt);
+         }
+-        return block_pool.Create(inst_pool);
++        return &pools.block.emplace_back(pools.inst);
+     }
+ 
+     void DemoteCombinationPass() {
+@@ -973,9 +841,7 @@ private:
+         asl.insert(next_it_2, demote_if_node);
+     }
+ 
+-    ObjectPool<Statement>& stmt_pool;
+-    ObjectPool<IR::Inst>& inst_pool;
+-    ObjectPool<IR::Block>& block_pool;
++    ShaderPools& pools;
+     Environment& env;
+     IR::AbstractSyntaxList& syntax_list;
+     bool uses_demote_to_helper{};
+@@ -983,15 +849,12 @@ private:
+ };
+ } // Anonymous namespace
+ 
+-IR::AbstractSyntaxList BuildASL(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
+-                                Environment& env, Flow::CFG& cfg,
+-                                const HostTranslateInfo& host_info) {
+-    ObjectPool<Statement> stmt_pool{64};
+-    GotoPass goto_pass{cfg, stmt_pool};
++IR::AbstractSyntaxList BuildASL(ShaderPools& pools, Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
++    GotoPass goto_pass{cfg, pools};
+     Statement& root{goto_pass.RootStatement()};
+     IR::AbstractSyntaxList syntax_list;
+-    TranslatePass{inst_pool, block_pool, stmt_pool, env, root, syntax_list, host_info};
+-    stmt_pool.ReleaseContents();
++    TranslatePass pass{pools, env, root, syntax_list, host_info};
++    pools.stmt.clear();
+     return syntax_list;
+ }
+ 
+diff --git a/src/shader_recompiler/frontend/maxwell/structured_control_flow.h b/src/shader_recompiler/frontend/maxwell/structured_control_flow.h
+index 15c1185ed..f46a8d9d6 100644
+--- a/src/shader_recompiler/frontend/maxwell/structured_control_flow.h
++++ b/src/shader_recompiler/frontend/maxwell/structured_control_flow.h
+@@ -1,3 +1,6 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+@@ -8,15 +11,13 @@
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/ir/value.h"
+ #include "shader_recompiler/frontend/maxwell/control_flow.h"
+-#include "shader_recompiler/object_pool.h"
+ 
+ namespace Shader {
+ struct HostTranslateInfo;
+ namespace Maxwell {
+ 
+-[[nodiscard]] IR::AbstractSyntaxList BuildASL(ObjectPool<IR::Inst>& inst_pool,
+-                                              ObjectPool<IR::Block>& block_pool, Environment& env,
+-                                              Flow::CFG& cfg, const HostTranslateInfo& host_info);
++struct ShaderPools;
++[[nodiscard]] IR::AbstractSyntaxList BuildASL(ShaderPools& pools, Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info);
+ 
+ } // namespace Maxwell
+ } // namespace Shader
+diff --git a/src/shader_recompiler/frontend/maxwell/translate_program.cpp b/src/shader_recompiler/frontend/maxwell/translate_program.cpp
+index 0cc4b3b84..15aa785e5 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate_program.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate_program.cpp
+@@ -13,6 +13,7 @@
+ #include <queue>
+ 
+ #include "common/settings.h"
++#include "shader_recompiler/shader_pool.h"
+ #include "shader_recompiler/exception.h"
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/ir/ir_emitter.h"
+@@ -328,13 +329,12 @@ void TightenOutputVertices(IR::Program& program) {
+ }
+ } // Anonymous namespace
+ 
+-IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
+-                             Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
++IR::Program TranslateProgram(ShaderPools& pools, Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
+     HostTranslateInfo normalized_host_info{host_info};
+     normalized_host_info.ApplyDescriptorLimitPolicy();
+ 
+     IR::Program program;
+-    program.syntax_list = BuildASL(inst_pool, block_pool, env, cfg, normalized_host_info);
++    program.syntax_list = BuildASL(pools, env, cfg, host_info);
+     program.blocks = GenerateBlocks(program.syntax_list);
+     program.post_order_blocks = PostOrder(program.syntax_list.front());
+     program.stage = env.ShaderStage();
+@@ -506,11 +506,7 @@ void ConvertLegacyToGeneric(IR::Program& program, const Shader::RuntimeInfo& run
+     }
+ }
+ 
+-IR::Program GenerateGeometryPassthrough(ObjectPool<IR::Inst>& inst_pool,
+-                                        ObjectPool<IR::Block>& block_pool,
+-                                        const HostTranslateInfo& host_info,
+-                                        IR::Program& source_program,
+-                                        Shader::OutputTopology output_topology) {
++IR::Program GenerateGeometryPassthrough(ShaderPools& pools, const HostTranslateInfo& host_info, IR::Program& source_program, Shader::OutputTopology output_topology) {
+     IR::Program program;
+     program.stage = Stage::Geometry;
+     program.output_topology = output_topology;
+@@ -522,7 +518,7 @@ IR::Program GenerateGeometryPassthrough(ObjectPool<IR::Inst>& inst_pool,
+     program.info.stores.Set(IR::Attribute::Layer, true);
+     program.info.stores.Set(source_program.info.emulated_layer, false);
+ 
+-    IR::Block* current_block = block_pool.Create(inst_pool);
++    IR::Block* current_block = &pools.block.emplace_back(pools.inst);
+     auto& node{program.syntax_list.emplace_back()};
+     node.type = IR::AbstractSyntaxNode::Type::Block;
+     node.data.block = current_block;
+@@ -531,7 +527,7 @@ IR::Program GenerateGeometryPassthrough(ObjectPool<IR::Inst>& inst_pool,
+     EmitGeometryPassthrough(ir, program, program.info.stores, true,
+                             source_program.info.emulated_layer, std::nullopt);
+ 
+-    IR::Block* return_block{block_pool.Create(inst_pool)};
++    IR::Block* return_block{&pools.block.emplace_back(pools.inst)};
+     IR::IREmitter{*return_block}.Epilogue();
+     current_block->AddBranch(return_block);
+ 
+diff --git a/src/shader_recompiler/frontend/maxwell/translate_program.h b/src/shader_recompiler/frontend/maxwell/translate_program.h
+index 497afe7cb..a4d95d6de 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate_program.h
++++ b/src/shader_recompiler/frontend/maxwell/translate_program.h
+@@ -1,3 +1,6 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+@@ -7,7 +10,7 @@
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/ir/program.h"
+ #include "shader_recompiler/frontend/maxwell/control_flow.h"
+-#include "shader_recompiler/object_pool.h"
++#include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
+ #include "shader_recompiler/runtime_info.h"
+ 
+ namespace Shader {
+@@ -16,22 +19,17 @@ struct HostTranslateInfo;
+ 
+ namespace Shader::Maxwell {
+ 
+-[[nodiscard]] IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool,
+-                                           ObjectPool<IR::Block>& block_pool, Environment& env,
+-                                           Flow::CFG& cfg, const HostTranslateInfo& host_info);
++struct ShaderPools;
++
++[[nodiscard]] IR::Program TranslateProgram(ShaderPools& pools, Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info);
+ 
+-[[nodiscard]] IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b,
+-                                                  Environment& env_vertex_b);
++[[nodiscard]] IR::Program MergeDualVertexPrograms(IR::Program& vertex_a, IR::Program& vertex_b, Environment& env_vertex_b);
+ 
+ void ConvertLegacyToGeneric(IR::Program& program, const RuntimeInfo& runtime_info);
+ 
+ // Maxwell v1 and older Nvidia cards don't support setting gl_Layer from non-geometry stages.
+ // This creates a workaround by setting the layer as a generic output and creating a
+ // passthrough geometry shader that reads the generic and sets the layer.
+-[[nodiscard]] IR::Program GenerateGeometryPassthrough(ObjectPool<IR::Inst>& inst_pool,
+-                                                      ObjectPool<IR::Block>& block_pool,
+-                                                      const HostTranslateInfo& host_info,
+-                                                      IR::Program& source_program,
+-                                                      Shader::OutputTopology output_topology);
++[[nodiscard]] IR::Program GenerateGeometryPassthrough(ShaderPools& pools, const HostTranslateInfo& host_info, IR::Program& source_program, Shader::OutputTopology output_topology);
+ 
+ } // namespace Shader::Maxwell
+diff --git a/src/shader_recompiler/object_pool.h b/src/shader_recompiler/object_pool.h
+deleted file mode 100644
+index 5d648b159..000000000
+--- a/src/shader_recompiler/object_pool.h
++++ /dev/null
+@@ -1,106 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#pragma once
+-
+-#include <memory>
+-#include <type_traits>
+-#include <utility>
+-
+-namespace Shader {
+-
+-template <typename T>
+-    requires std::is_destructible_v<T>
+-class ObjectPool {
+-public:
+-    explicit ObjectPool(size_t chunk_size = 8192) : new_chunk_size{chunk_size} {
+-        node = &chunks.emplace_back(new_chunk_size);
+-    }
+-
+-    template <typename... Args>
+-        requires std::is_constructible_v<T, Args...>
+-    [[nodiscard]] T* Create(Args&&... args) {
+-        return std::construct_at(Memory(), std::forward<Args>(args)...);
+-    }
+-
+-    void ReleaseContents() {
+-        if (chunks.empty()) {
+-            return;
+-        }
+-        Chunk& root{chunks.front()};
+-        if (root.used_objects == root.num_objects) {
+-            // Root chunk has been filled, squash allocations into it
+-            const size_t total_objects{root.num_objects + new_chunk_size * (chunks.size() - 1)};
+-            chunks.clear();
+-            chunks.emplace_back(total_objects);
+-        } else {
+-            root.Release();
+-            chunks.resize(1);
+-        }
+-        chunks.shrink_to_fit();
+-        node = &chunks.front();
+-    }
+-
+-private:
+-    struct NonTrivialDummy {
+-        NonTrivialDummy() noexcept {}
+-    };
+-
+-    union Storage {
+-        Storage() noexcept {}
+-        ~Storage() noexcept {}
+-
+-        NonTrivialDummy dummy{};
+-        T object;
+-    };
+-
+-    struct Chunk {
+-        explicit Chunk() = default;
+-        explicit Chunk(size_t size)
+-            : num_objects{size}, storage{std::make_unique<Storage[]>(size)} {}
+-
+-        Chunk& operator=(Chunk&& rhs) noexcept {
+-            Release();
+-            used_objects = std::exchange(rhs.used_objects, 0);
+-            num_objects = std::exchange(rhs.num_objects, 0);
+-            storage = std::move(rhs.storage);
+-            return *this;
+-        }
+-
+-        Chunk(Chunk&& rhs) noexcept
+-            : used_objects{std::exchange(rhs.used_objects, 0)},
+-              num_objects{std::exchange(rhs.num_objects, 0)}, storage{std::move(rhs.storage)} {}
+-
+-        ~Chunk() {
+-            Release();
+-        }
+-
+-        void Release() {
+-            std::destroy_n(storage.get(), used_objects);
+-            used_objects = 0;
+-        }
+-
+-        size_t used_objects{};
+-        size_t num_objects{};
+-        std::unique_ptr<Storage[]> storage;
+-    };
+-
+-    [[nodiscard]] T* Memory() {
+-        Chunk* const chunk{FreeChunk()};
+-        return &chunk->storage[chunk->used_objects++].object;
+-    }
+-
+-    [[nodiscard]] Chunk* FreeChunk() {
+-        if (node->used_objects != node->num_objects) {
+-            return node;
+-        }
+-        node = &chunks.emplace_back(new_chunk_size);
+-        return node;
+-    }
+-
+-    Chunk* node{};
+-    std::vector<Chunk> chunks;
+-    size_t new_chunk_size{};
+-};
+-
+-} // namespace Shader
+diff --git a/src/shader_recompiler/shader_pool.h b/src/shader_recompiler/shader_pool.h
+new file mode 100644
+index 000000000..603b914d3
+--- /dev/null
++++ b/src/shader_recompiler/shader_pool.h
+@@ -0,0 +1,134 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <boost/container/stable_vector.hpp>
++#include <boost/intrusive/list.hpp>
++#include "shader_recompiler/frontend/maxwell/control_flow.h"
++
++namespace Shader::Maxwell {
++
++struct Statement;
++
++// Use normal_link because we are not guaranteed to destroy the tree in order
++using ListBaseHook = boost::intrusive::list_base_hook<boost::intrusive::link_mode<boost::intrusive::normal_link>>;
++using Tree = boost::intrusive::list<Statement,
++    // Allow using Statement without a definition
++    boost::intrusive::base_hook<ListBaseHook>,
++    // Avoid linear complexity on splice, size is never called
++    boost::intrusive::constant_time_size<false>>;
++using Node = Tree::iterator;
++
++enum class StatementType {
++    Code,
++    Goto,
++    Label,
++    If,
++    Loop,
++    Break,
++    Return,
++    Kill,
++    Unreachable,
++    Function,
++    Identity,
++    Not,
++    Or,
++    SetVariable,
++    SetIndirectBranchVariable,
++    Variable,
++    IndirectBranchCond,
++};
++
++[[nodiscard]] inline bool HasChildren(StatementType type) {
++    switch (type) {
++    case StatementType::If:
++    case StatementType::Loop:
++    case StatementType::Function:
++        return true;
++    default:
++        return false;
++    }
++}
++
++struct Goto {};
++struct Label {};
++struct If {};
++struct Loop {};
++struct Break {};
++struct Return {};
++struct Kill {};
++struct Unreachable {};
++struct FunctionTag {};
++struct Identity {};
++struct Not {};
++struct Or {};
++struct SetVariable {};
++struct SetIndirectBranchVariable {};
++struct Variable {};
++struct IndirectBranchCond {};
++
++#ifdef _MSC_VER
++#pragma warning(push)
++#pragma warning(disable : 26495) // Always initialize a member variable, expected in Statement
++#endif
++struct Statement : ListBaseHook {
++    Statement(const Flow::Block* block_, Statement* up_) : block{block_}, up{up_}, type{StatementType::Code} {}
++    Statement(Goto, Statement* cond_, Node label_, Statement* up_) : label{label_}, cond{cond_}, up{up_}, type{StatementType::Goto} {}
++    Statement(Label, u32 id_, Statement* up_) : id{id_}, up{up_}, type{StatementType::Label} {}
++    Statement(If, Statement* cond_, Tree&& children_, Statement* up_) : children{std::move(children_)}, cond{cond_}, up{up_}, type{StatementType::If} {}
++    Statement(Loop, Statement* cond_, Tree&& children_, Statement* up_) : children{std::move(children_)}, cond{cond_}, up{up_}, type{StatementType::Loop} {}
++    Statement(Break, Statement* cond_, Statement* up_) : cond{cond_}, up{up_}, type{StatementType::Break} {}
++    Statement(Return, Statement* up_) : up{up_}, type{StatementType::Return} {}
++    Statement(Kill, Statement* up_) : up{up_}, type{StatementType::Kill} {}
++    Statement(Unreachable, Statement* up_) : up{up_}, type{StatementType::Unreachable} {}
++    Statement(FunctionTag) : children{}, type{StatementType::Function} {}
++    Statement(Identity, IR::Condition cond_, Statement* up_) : guest_cond{cond_}, up{up_}, type{StatementType::Identity} {}
++    Statement(Not, Statement* op_, Statement* up_) : op{op_}, up{up_}, type{StatementType::Not} {}
++    Statement(Or, Statement* op_a_, Statement* op_b_, Statement* up_) : op_a{op_a_}, op_b{op_b_}, up{up_}, type{StatementType::Or} {}
++    Statement(SetVariable, u32 id_, Statement* op_, Statement* up_) : op{op_}, id{id_}, up{up_}, type{StatementType::SetVariable} {}
++    Statement(SetIndirectBranchVariable, IR::Reg branch_reg_, s32 branch_offset_, Statement* up_) : branch_offset{branch_offset_}, branch_reg{branch_reg_}, up{up_}, type{StatementType::SetIndirectBranchVariable} {}
++    Statement(Variable, u32 id_, Statement* up_) : id{id_}, up{up_}, type{StatementType::Variable} {}
++    Statement(IndirectBranchCond, u32 location_, Statement* up_) : location{location_}, up{up_}, type{StatementType::IndirectBranchCond} {}
++    ~Statement() {
++        if (HasChildren(type)) {
++            std::destroy_at(&children);
++        }
++    }
++    union {
++        const Flow::Block* block;
++        Node label;
++        Tree children;
++        IR::Condition guest_cond;
++        Statement* op;
++        Statement* op_a;
++        u32 location;
++        s32 branch_offset;
++    };
++    union {
++        Statement* cond;
++        Statement* op_b;
++        u32 id;
++        IR::Reg branch_reg;
++    };
++    Statement* up{};
++    StatementType type;
++};
++#ifdef _MSC_VER
++#pragma warning(pop)
++#endif
++
++struct ShaderPools {
++    void clear() {
++        flow_block.clear();
++        block.clear();
++        inst.clear();
++        stmt.clear();
++    }
++    boost::container::stable_vector<Shader::IR::Inst> inst{};
++    boost::container::stable_vector<Shader::IR::Block> block{};
++    boost::container::stable_vector<Shader::Maxwell::Flow::Block> flow_block{};
++    boost::container::stable_vector<Shader::Maxwell::Statement> stmt;
++};
++
++}
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.cpp b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+index df69eb97f..1fb5bceb3 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+@@ -43,7 +43,6 @@ using Shader::Backend::GLASM::EmitGLASM;
+ using Shader::Backend::GLSL::EmitGLSL;
+ using Shader::Backend::SPIRV::EmitSPIRV;
+ using Shader::Maxwell::ConvertLegacyToGeneric;
+-using Shader::Maxwell::GenerateGeometryPassthrough;
+ using Shader::Maxwell::MergeDualVertexPrograms;
+ using Shader::Maxwell::TranslateProgram;
+ using VideoCommon::ComputeEnvironment;
+@@ -317,7 +316,7 @@ void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
+         ComputePipelineKey key;
+         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+         queue_work([this, key, env_ = std::move(env), &state, &callback](Context* ctx) mutable {
+-            ctx->pools.ReleaseContents();
++            ctx->pools.clear();
+             auto pipeline{CreateComputePipeline(ctx->pools, key, env_, true)};
+             std::scoped_lock lock{state.mutex};
+             if (pipeline) {
+@@ -338,7 +337,7 @@ void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
+             for (auto& env : envs_) {
+                 env_ptrs.push_back(&env);
+             }
+-            ctx->pools.ReleaseContents();
++            ctx->pools.clear();
+             auto pipeline{CreateGraphicsPipeline(ctx->pools, key, MakeSpan(env_ptrs), false, true)};
+             std::scoped_lock lock{state.mutex};
+             if (pipeline) {
+@@ -448,9 +447,8 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline() {
+     GraphicsEnvironments environments;
+     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+ 
+-    main_pools.ReleaseContents();
+-    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(),
+-                                         use_asynchronous_shaders)};
++    main_pools.clear();
++    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), use_asynchronous_shaders)};
+     if (!pipeline || shader_cache_filename.empty()) {
+         return pipeline;
+     }
+@@ -464,10 +462,7 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline() {
+     return pipeline;
+ }
+ 
+-std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
+-    ShaderContext::ShaderPools& pools, const GraphicsPipelineKey& key,
+-    std::span<Shader::Environment* const> envs, bool use_shader_workers,
+-    bool force_context_flush) try {
++std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(Shader::Maxwell::ShaderPools& pools, const GraphicsPipelineKey& key, std::span<Shader::Environment* const> envs, bool use_shader_workers, bool force_context_flush) try {
+     auto hash = key.Hash();
+     LOG_INFO(Render_OpenGL, "{:#016x}", hash);
+     size_t env_index{};
+@@ -480,12 +475,10 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
+     Shader::IR::Program* layer_source_program{};
+ 
+     for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+-        const bool is_emulated_stage = layer_source_program != nullptr
+-            && index == u32(Maxwell::ShaderType::Geometry);
++        const bool is_emulated_stage = layer_source_program != nullptr && index == u32(Maxwell::ShaderType::Geometry);
+         if (key.unique_hashes[index] == 0 && is_emulated_stage) {
+             auto topology = MaxwellToOutputTopology(key.gs_input_topology);
+-            programs[index] = GenerateGeometryPassthrough(pools.inst, pools.block, host_info,
+-                                                          *layer_source_program, topology);
++            programs[index] = Shader::Maxwell::GenerateGeometryPassthrough(pools, host_info, *layer_source_program, topology);
+             continue;
+         }
+         if (key.unique_hashes[index] == 0) {
+@@ -503,13 +496,13 @@ std::unique_ptr<GraphicsPipeline> ShaderCache::CreateGraphicsPipeline(
+ 
+         if (!uses_vertex_a || index != 1) {
+             // Normal path
+-            programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
++            programs[index] = TranslateProgram(pools, env, cfg, host_info);
+ 
+             total_storage_buffers += Shader::NumDescriptors(programs[index].info.storage_buffers_descriptors);
+         } else {
+             // VertexB path when VertexA is present.
+             auto& program_va{programs[0]};
+-            auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
++            auto program_vb{TranslateProgram(pools, env, cfg, host_info)};
+             total_storage_buffers += Shader::NumDescriptors(program_vb.info.storage_buffers_descriptors);
+             programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
+         }
+@@ -576,7 +569,7 @@ std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
+     ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+     env.SetCachedSize(shader->size_bytes);
+ 
+-    main_pools.ReleaseContents();
++    main_pools.clear();
+     auto pipeline{CreateComputePipeline(main_pools, key, env)};
+     if (!pipeline || shader_cache_filename.empty()) {
+         return pipeline;
+@@ -586,9 +579,7 @@ std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
+     return pipeline;
+ }
+ 
+-std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
+-    ShaderContext::ShaderPools& pools, const ComputePipelineKey& key, Shader::Environment& env,
+-    bool force_context_flush) try {
++std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(Shader::Maxwell::ShaderPools& pools, const ComputePipelineKey& key, Shader::Environment& env, bool force_context_flush) try {
+     auto hash = key.Hash();
+     LOG_INFO(Render_OpenGL, "{:#016x}", hash);
+ 
+@@ -598,7 +589,7 @@ std::unique_ptr<ComputePipeline> ShaderCache::CreateComputePipeline(
+         env.Dump(hash, key.unique_hash);
+     }
+ 
+-    auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
++    auto program{TranslateProgram(pools, env, cfg, host_info)};
+     const u32 num_storage_buffers{Shader::NumDescriptors(program.info.storage_buffers_descriptors)};
+     Shader::RuntimeInfo info;
+     info.glasm_use_storage_buffers = num_storage_buffers <= device.GetMaxGLASMStorageBufferBlocks();
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.h b/src/video_core/renderer_opengl/gl_shader_cache.h
+index 794b6773c..763277be0 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.h
++++ b/src/video_core/renderer_opengl/gl_shader_cache.h
+@@ -12,6 +12,7 @@
+ #include "common/common_types.h"
+ #include "common/thread_worker.h"
+ #include "shader_recompiler/host_translate_info.h"
++#include "shader_recompiler/shader_pool.h"
+ #include "shader_recompiler/profile.h"
+ #include "video_core/renderer_opengl/gl_compute_pipeline.h"
+ #include "video_core/renderer_opengl/gl_graphics_pipeline.h"
+@@ -51,20 +52,9 @@ private:
+     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
+ 
+     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
+-
+-    std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
+-        ShaderContext::ShaderPools& pools, const GraphicsPipelineKey& key,
+-        std::span<Shader::Environment* const> envs, bool use_shader_workers,
+-        bool force_context_flush = false);
+-
+-    std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineKey& key,
+-                                                           const VideoCommon::ShaderInfo* shader);
+-
+-    std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderContext::ShaderPools& pools,
+-                                                           const ComputePipelineKey& key,
+-                                                           Shader::Environment& env,
+-                                                           bool force_context_flush = false);
+-
++    std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(Shader::Maxwell::ShaderPools& pools, const GraphicsPipelineKey& key, std::span<Shader::Environment* const> envs, bool use_shader_workers, bool force_context_flush = false);
++    std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineKey& key, const VideoCommon::ShaderInfo* shader);
++    std::unique_ptr<ComputePipeline> CreateComputePipeline(Shader::Maxwell::ShaderPools& pools, const ComputePipelineKey& key, Shader::Environment& env, bool force_context_flush = false);
+     std::unique_ptr<ShaderWorker> CreateWorkers() const;
+ 
+     Core::Frontend::EmuWindow& emu_window;
+@@ -80,7 +70,7 @@ private:
+     GraphicsPipelineKey graphics_key{};
+     GraphicsPipeline* current_pipeline{};
+ 
+-    ShaderContext::ShaderPools main_pools;
++    Shader::Maxwell::ShaderPools main_pools;
+     ::Common::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
+     ::Common::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_cache;
+ 
+diff --git a/src/video_core/renderer_opengl/gl_shader_context.h b/src/video_core/renderer_opengl/gl_shader_context.h
+index d12cd06fa..90b39b10b 100644
+--- a/src/video_core/renderer_opengl/gl_shader_context.h
++++ b/src/video_core/renderer_opengl/gl_shader_context.h
+@@ -1,33 +1,26 @@
++// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #pragma once
+ 
++#include <boost/container/stable_vector.hpp>
+ #include "core/frontend/emu_window.h"
+ #include "core/frontend/graphics_context.h"
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/maxwell/control_flow.h"
++#include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
++#include "shader_recompiler/frontend/maxwell/translate_program.h"
+ 
+ namespace OpenGL::ShaderContext {
+-struct ShaderPools {
+-    void ReleaseContents() {
+-        flow_block.ReleaseContents();
+-        block.ReleaseContents();
+-        inst.ReleaseContents();
+-    }
+-
+-    Shader::ObjectPool<Shader::IR::Inst> inst{8192};
+-    Shader::ObjectPool<Shader::IR::Block> block{32};
+-    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block{32};
+-};
+ 
+ struct Context {
+-    explicit Context(Core::Frontend::EmuWindow& emu_window)
+-        : gl_context{emu_window.CreateSharedContext()}, scoped{*gl_context} {}
+-
++    explicit Context(Core::Frontend::EmuWindow& emu_window) : gl_context{emu_window.CreateSharedContext()}, scoped{*gl_context} {}
+     std::unique_ptr<Core::Frontend::GraphicsContext> gl_context;
+     Core::Frontend::GraphicsContext::Scoped scoped;
+-    ShaderPools pools;
++    Shader::Maxwell::ShaderPools pools;
+ };
+ 
+ } // namespace OpenGL::ShaderContext
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index e9403580d..cf67c1af1 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -53,15 +53,6 @@
+ namespace Vulkan {
+ 
+ namespace {
+-using Shader::Backend::SPIRV::EmitSPIRV;
+-using Shader::Maxwell::ConvertLegacyToGeneric;
+-using Shader::Maxwell::GenerateGeometryPassthrough;
+-using Shader::Maxwell::MergeDualVertexPrograms;
+-using Shader::Maxwell::TranslateProgram;
+-using VideoCommon::ComputeEnvironment;
+-using VideoCommon::FileEnvironment;
+-using VideoCommon::GenericEnvironment;
+-using VideoCommon::GraphicsEnvironment;
+ 
+ constexpr u32 CACHE_VERSION = 18;
+ constexpr size_t VULKAN_CACHE_FLUSH_PIPELINES = 128;
+@@ -641,12 +632,12 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+     if (device.IsKhrPipelineExecutablePropertiesEnabled()) {
+         state.statistics = std::make_unique<PipelineStatistics>(device);
+     }
+-    const auto load_compute{[&](std::ifstream& file, FileEnvironment env) {
++    const auto load_compute{[&](std::ifstream& file, VideoCommon::FileEnvironment env) {
+         ComputePipelineCacheKey key;
+         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+ 
+         workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
+-            ShaderPools pools;
++            Shader::Maxwell::ShaderPools pools;
+             auto pipeline{CreateComputePipeline(pools, key, env_, state.statistics.get(), false)};
+             std::scoped_lock lock{state.mutex};
+             if (pipeline) {
+@@ -659,7 +650,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+         });
+         ++state.total;
+     }};
+-    const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
++    const auto load_graphics{[&](std::ifstream& file, std::vector<VideoCommon::FileEnvironment> envs) {
+         GraphicsPipelineCacheKey key;
+         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+ 
+@@ -692,7 +683,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
+         }
+ 
+         workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
+-            ShaderPools pools;
++            Shader::Maxwell::ShaderPools pools;
+             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+             for (auto& env : envs_) {
+                 env_ptrs.push_back(&env);
+@@ -799,10 +790,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
+     return nullptr;
+ }
+ 
+-std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+-    ShaderPools& pools, const GraphicsPipelineCacheKey& key,
+-    std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
+-    bool build_in_parallel) try {
++std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(Shader::Maxwell::ShaderPools& pools, const GraphicsPipelineCacheKey& key, std::span<Shader::Environment* const> envs, PipelineStatistics* statistics, bool build_in_parallel) try {
+     auto hash = key.Hash();
+     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
+     size_t env_index{0};
+@@ -814,12 +802,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+     Shader::IR::Program* layer_source_program{};
+ 
+     for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+-        const bool is_emulated_stage = layer_source_program != nullptr &&
+-                                       index == static_cast<u32>(Maxwell::ShaderType::Geometry);
++        const bool is_emulated_stage = layer_source_program != nullptr && index == u32(Maxwell::ShaderType::Geometry);
+         if (key.unique_hashes[index] == 0 && is_emulated_stage) {
+             auto topology = MaxwellToOutputTopology(key.state.topology);
+-            programs[index] = GenerateGeometryPassthrough(pools.inst, pools.block, host_info,
+-                                                          *layer_source_program, topology);
++            programs[index] = Shader::Maxwell::GenerateGeometryPassthrough(pools, host_info, *layer_source_program, topology);
+             continue;
+         }
+         if (key.unique_hashes[index] == 0) {
+@@ -828,16 +814,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+         Shader::Environment& env{*envs[env_index]};
+         ++env_index;
+ 
+-        const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
++        const u32 cfg_offset{u32(env.StartAddress() + sizeof(Shader::ProgramHeader))};
+         Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
+         if (!uses_vertex_a || index != 1) {
+             // Normal path
+-            programs[index] = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
++            programs[index] = Shader::Maxwell::TranslateProgram(pools, env, cfg, host_info);
+         } else {
+             // VertexB path when VertexA is present.
+             auto& program_va{programs[0]};
+-            auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+-            programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
++            auto program_vb{Shader::Maxwell::TranslateProgram(pools, env, cfg, host_info)};
++            programs[index] = Shader::Maxwell::MergeDualVertexPrograms(program_va, program_vb, env);
+         }
+ 
+         if (device.GetDriverID() != VK_DRIVER_ID_NVIDIA_PROPRIETARY && Shader::Optimization::HasBrokenPattern(programs[index])) {
+@@ -872,8 +858,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+         infos[stage_index] = &program.info;
+ 
+         const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage, device)};
+-        ConvertLegacyToGeneric(program, runtime_info);
+-        const std::vector<u32> code{EmitSPIRV(profile, runtime_info, program, binding)};
++        Shader::Maxwell::ConvertLegacyToGeneric(program, runtime_info);
++        const std::vector<u32> code{Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, program, binding)};
+         device.SaveShader(code);
+         modules[stage_index] = BuildShader(device, code);
+ 
+@@ -929,14 +915,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
+     GraphicsEnvironments environments;
+     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+ 
+-    main_pools.ReleaseContents();
++    main_pools.clear();
+     auto pipeline{
+         CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
+     if (!pipeline || pipeline_cache_filename.empty()) {
+         return pipeline;
+     }
+     serialization_thread.QueueWork([this, key = graphics_key, envs = std::move(environments.envs)] {
+-        boost::container::static_vector<const GenericEnvironment*, Maxwell::MaxShaderProgram>
++        boost::container::static_vector<const VideoCommon::GenericEnvironment*, Maxwell::MaxShaderProgram>
+             env_ptrs;
+         for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
+             if (key.unique_hashes[index] != 0) {
+@@ -953,25 +939,23 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+     const ComputePipelineCacheKey& key, const ShaderInfo* shader) {
+     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
+     const auto& qmd{kepler_compute->launch_description};
+-    ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
++    VideoCommon::ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+     env.SetCachedSize(shader->size_bytes);
+ 
+-    main_pools.ReleaseContents();
++    main_pools.clear();
+     auto pipeline{CreateComputePipeline(main_pools, key, env, nullptr, true)};
+     if (!pipeline || pipeline_cache_filename.empty()) {
+         return pipeline;
+     }
+     serialization_thread.QueueWork([this, key, env_ = std::move(env)] {
+-        SerializePipeline(key, std::array<const GenericEnvironment*, 1>{&env_},
++        SerializePipeline(key, std::array<const VideoCommon::GenericEnvironment*, 1>{&env_},
+                           pipeline_cache_filename, CACHE_VERSION);
+     });
+     QueueVulkanPipelineCacheFlush();
+     return pipeline;
+ }
+ 
+-std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+-    ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
+-    PipelineStatistics* statistics, bool build_in_parallel) try {
++std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(Shader::Maxwell::ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env, PipelineStatistics* statistics, bool build_in_parallel) try {
+     auto hash = key.Hash();
+     if (device.HasBrokenCompute()) {
+         LOG_ERROR(Render_Vulkan, "Skipping {:#016x}", hash);
+@@ -987,11 +971,9 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+         env.Dump(hash, key.unique_hash);
+     }
+ 
+-    auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
++    auto program{Shader::Maxwell::TranslateProgram(pools, env, cfg, host_info)};
+     const VkDriverIdKHR driver_id = device.GetDriverID();
+-    const bool needs_shared_mem_clamp =
+-        driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
+-        driver_id == VK_DRIVER_ID_ARM_PROPRIETARY;
++    const bool needs_shared_mem_clamp = driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY || driver_id == VK_DRIVER_ID_ARM_PROPRIETARY;
+     const u32 max_shared_memory = device.GetMaxComputeSharedMemorySize();
+     if (needs_shared_mem_clamp && program.shared_memory_size > max_shared_memory) {
+         LOG_WARNING(Render_Vulkan,
+@@ -1001,7 +983,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
+                     max_shared_memory / 1024);
+         program.shared_memory_size = max_shared_memory;
+     }
+-    const std::vector<u32> code{EmitSPIRV(profile, program)};
++    const std::vector<u32> code{Shader::Backend::SPIRV::EmitSPIRV(profile, program)};
+     device.SaveShader(code);
+     vk::ShaderModule spv_module{BuildShader(device, code)};
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 71dfb46e3..c5cb4e5e8 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -15,15 +15,18 @@
+ #include <type_traits>
+ #include "common/container/unordered_map.h"
+ #include <vector>
++#include <boost/container/stable_vector.hpp>
+ 
+ #include "common/common_types.h"
+ #include "common/thread_worker.h"
+ #include "shader_recompiler/frontend/ir/basic_block.h"
+ #include "shader_recompiler/frontend/ir/value.h"
+ #include "shader_recompiler/frontend/maxwell/control_flow.h"
++#include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
++#include "shader_recompiler/frontend/maxwell/translate_program.h"
+ #include "shader_recompiler/host_translate_info.h"
+-#include "shader_recompiler/object_pool.h"
+ #include "shader_recompiler/profile.h"
++#include "shader_recompiler/shader_pool.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+ #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+@@ -90,18 +93,6 @@ class Scheduler;
+ 
+ using VideoCommon::ShaderInfo;
+ 
+-struct ShaderPools {
+-    void ReleaseContents() {
+-        flow_block.ReleaseContents();
+-        block.ReleaseContents();
+-        inst.ReleaseContents();
+-    }
+-
+-    Shader::ObjectPool<Shader::IR::Inst> inst{8192};
+-    Shader::ObjectPool<Shader::IR::Block> block{32};
+-    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block{32};
+-};
+-
+ class PipelineCache : public VideoCommon::ShaderCache {
+ public:
+     explicit PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, const Device& device,
+@@ -127,14 +118,14 @@ private:
+     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
+ 
+     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
+-        ShaderPools& pools, const GraphicsPipelineCacheKey& key,
++        Shader::Maxwell::ShaderPools& pools, const GraphicsPipelineCacheKey& key,
+         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
+         bool build_in_parallel);
+ 
+     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
+                                                            const ShaderInfo* shader);
+ 
+-    std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
++    std::unique_ptr<ComputePipeline> CreateComputePipeline(Shader::Maxwell::ShaderPools& pools,
+                                                            const ComputePipelineCacheKey& key,
+                                                            Shader::Environment& env,
+                                                            PipelineStatistics* statistics,
+@@ -166,7 +157,7 @@ private:
+     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
+     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
+ 
+-    ShaderPools main_pools;
++    Shader::Maxwell::ShaderPools main_pools;
+ 
+     Shader::Profile profile;
+     Shader::HostTranslateInfo host_info;
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index f1aff2810..72bf2db94 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -11,7 +11,6 @@
+ 
+ #include "common/assert.h"
+ #include "shader_recompiler/frontend/maxwell/control_flow.h"
+-#include "shader_recompiler/object_pool.h"
+ #include "video_core/control/channel_state.h"
+ #include "video_core/dirty_flags.h"
+ #include "video_core/engines/kepler_compute.h"
+@@ -236,7 +235,7 @@ const ShaderInfo* ShaderCache::MakeShaderInfo(GenericEnvironment& env, VAddr cpu
+     } else {
+         // Slow path, not really hit on commercial games
+         // Build a control flow graph to get the real shader size
+-        Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_block;
++        boost::container::stable_vector<Shader::Maxwell::Flow::Block> flow_block;
+         Shader::Maxwell::Flow::CFG cfg{env, flow_block, env.StartAddress()};
+         info->unique_hash = env.CalculateHash();
+         info->size_bytes = env.ReadSizeBytes();
+-- 
+2.43.0
+

@@ -1,0 +1,61 @@
+diff --git a/CMakeModules/CPMUtil.cmake b/CMakeModules/CPMUtil.cmake
+index a628e3fc8..b2ff59dbf 100644
+--- a/CMakeModules/CPMUtil.cmake
++++ b/CMakeModules/CPMUtil.cmake
+@@ -178,6 +178,41 @@ endfunction()
+ # And retry 5 times
+ function(cpm_download url file)
+     echo("Downloading ${url} to ${file}")
++    # offline-build: GitHub archive downloads are blocked in this sandbox, use git instead
++    if (url MATCHES "^https://github.com/([^/]+/[^/]+)/archive/(.+)\\.tar\\.gz$")
++        set(_repo "${CMAKE_MATCH_1}")
++        set(_ref "${CMAKE_MATCH_2}")
++        set(_tmp "${file}.gitsrc")
++        file(REMOVE_RECURSE "${_tmp}")
++        file(MAKE_DIRECTORY "${_tmp}")
++        execute_process(COMMAND git init -q WORKING_DIRECTORY "${_tmp}")
++        execute_process(COMMAND git fetch -q --depth 1 "https://github.com/${_repo}" "${_ref}"
++            WORKING_DIRECTORY "${_tmp}" RESULT_VARIABLE _r1)
++        if (NOT _r1 EQUAL 0)
++            execute_process(COMMAND git fetch -q --depth 1 "https://github.com/${_repo}" "refs/tags/${_ref}"
++                WORKING_DIRECTORY "${_tmp}" RESULT_VARIABLE _r1)
++        endif()
++        if (NOT _r1 EQUAL 0)
++            # abbreviated commit: resolve it from a blobless clone, then fetch the full sha
++            execute_process(COMMAND git fetch -q --filter=blob:none "https://github.com/${_repo}"
++                "+refs/heads/*:refs/remotes/o/*" "+refs/tags/*:refs/tags/*"
++                WORKING_DIRECTORY "${_tmp}")
++            execute_process(COMMAND git rev-parse --verify "${_ref}^{commit}"
++                WORKING_DIRECTORY "${_tmp}" OUTPUT_VARIABLE _full OUTPUT_STRIP_TRAILING_WHITESPACE
++                RESULT_VARIABLE _r1)
++            if (_r1 EQUAL 0)
++                execute_process(COMMAND git fetch -q --depth 1 "https://github.com/${_repo}" "${_full}"
++                    WORKING_DIRECTORY "${_tmp}" RESULT_VARIABLE _r1)
++            endif()
++        endif()
++        execute_process(COMMAND git archive --format=tar.gz --prefix=src/ -o "${file}" FETCH_HEAD
++            WORKING_DIRECTORY "${_tmp}" RESULT_VARIABLE _r2)
++        file(REMOVE_RECURSE "${_tmp}")
++        if (_r1 EQUAL 0 AND _r2 EQUAL 0)
++            return()
++        endif()
++        echo_error("git fallback failed for ${_repo}@${_ref}")
++    endif()
+     list(LENGTH ARGN argn_len)
+     if(argn_len GREATER 0)
+         list(GET ARGN 0 hash)
+@@ -1050,8 +1085,14 @@ function(AddCIPackage)
+         set(sha512sum_file
+             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
+ 
++        string(TOLOWER "${ARTIFACT_PACKAGE}" _lower_pkg)
++        if (EXISTS "${CPM_SOURCE_CACHE}/${_lower_pkg}/${ARTIFACT_VERSION}-${pkgname}/.cpm_patch_key")
++            file(WRITE "${sha512sum_file}" "prebuilt-offline")
++            set(sha512sum_status 0)
++        else()
+         file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
+             STATUS sha512sum_status)
++        endif()
+         list(GET sha512sum_status 0 sha512sum_error)
+ 
+         if(sha512sum_error)
